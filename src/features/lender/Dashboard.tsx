@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../auth/AuthContext';
-import { getInvoices, getOffers, getYieldHistory } from '../../lib/mock-data';
+import { getInvoices, getOffers, getYieldHistory, settleInvoiceInMock } from '../../lib/mock-data';
 import RedactionBar from '../../components/RedactionBar';
 import { Lock, Unlock, LogOut, Eye, EyeOff, TrendingUp, ShoppingBag, Download } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -56,6 +56,7 @@ export const LenderDashboard: React.FC = () => {
       await tx.wait();
       
       showToast("Invoice Settled", `Funds have been transferred to your wallet successfully.`, "received");
+      settleInvoiceInMock(invoiceId);
     } catch (err: any) {
       console.error(err);
       showToast("Error", "Failed to settle invoice: " + err.message, "due");
@@ -346,23 +347,49 @@ export const LenderDashboard: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-sage/20">
-                      {myOffers.map((off) => (
-                        <tr key={off.id} className="hover:bg-paper/50 transition-colors">
-                          <td className="py-4 font-semibold text-ink">{off.invoiceNumber}</td>
-                          <td className="py-4 text-right font-semibold">${off.offeredAmount.toLocaleString()}.00</td>
-                          <td className="py-4 text-center text-ledger font-semibold">{off.discountRate.toFixed(2)}%</td>
-                          <td className="py-4 text-center">{off.repaymentTermDays} Days</td>
-                          <td className="py-4 text-center">
-                            <span className={`rubber-stamp ${
-                              off.status === 'Accepted' ? 'stamp-financed' :
-                              off.status === 'Declined' ? 'stamp-settled border-seal/40 text-seal/80' :
-                              'stamp-pending'
-                            } text-[9px]`}>
-                              {off.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
+                      {myOffers.map((off) => {
+                        const associatedInvoice = invoices.find(i => i.id === off.invoiceId);
+                        let displayStatus = off.status;
+                        let stampClass = 'stamp-pending';
+
+                        if (off.status === 'Accepted') {
+                          if (associatedInvoice) {
+                            if (associatedInvoice.status === 'Financed') {
+                              displayStatus = 'Approved (Unpaid)';
+                              stampClass = 'stamp-financed';
+                            } else if (associatedInvoice.status === 'Repaid') {
+                              displayStatus = 'Repaid';
+                              stampClass = 'stamp-approved';
+                            } else if (associatedInvoice.status === 'Settled') {
+                              displayStatus = 'Settled';
+                              stampClass = 'stamp-approved';
+                            } else {
+                              displayStatus = 'Approved';
+                              stampClass = 'stamp-financed';
+                            }
+                          } else {
+                            displayStatus = 'Approved';
+                            stampClass = 'stamp-financed';
+                          }
+                        } else if (off.status === 'Declined') {
+                          displayStatus = 'Declined';
+                          stampClass = 'stamp-settled border-seal/40 text-seal/80';
+                        }
+
+                        return (
+                          <tr key={off.id} className="hover:bg-paper/50 transition-colors">
+                            <td className="py-4 font-semibold text-ink">{off.invoiceNumber}</td>
+                            <td className="py-4 text-right font-semibold">${off.offeredAmount.toLocaleString()}.00</td>
+                            <td className="py-4 text-center text-ledger font-semibold">{off.discountRate.toFixed(2)}%</td>
+                            <td className="py-4 text-center">{off.repaymentTermDays} Days</td>
+                            <td className="py-4 text-center">
+                              <span className={`rubber-stamp ${stampClass} text-[9px]`}>
+                                {displayStatus}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 )}

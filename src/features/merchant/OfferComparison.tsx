@@ -223,14 +223,21 @@ export const OfferComparison: React.FC = () => {
                       </div>
 
                       <div className="flex flex-wrap md:flex-nowrap gap-6 md:gap-8 items-center font-mono text-xs">
-                        <div className="space-y-0.5 min-w-28 text-left md:text-right">
+                        <div className="space-y-0.5 min-w-24 text-left md:text-right">
                           <span className="text-[9px] text-sage uppercase block">DISCOUNT RATE</span>
                           <span className="text-ink font-bold text-sm text-ledger">
                             {off.discountRate.toFixed(2)}%
                           </span>
                         </div>
 
-                        <div className="space-y-0.5 min-w-32 text-left md:text-right">
+                        <div className="space-y-0.5 min-w-28 text-left md:text-right">
+                          <span className="text-[9px] text-sage uppercase block">REPAYMENT TERM</span>
+                          <span className="text-ink font-bold text-sm">
+                            {off.repaymentTermDays} Days
+                          </span>
+                        </div>
+
+                        <div className="space-y-0.5 min-w-28 text-left md:text-right">
                           <span className="text-[9px] text-sage uppercase block">FUNDING CAPITAL</span>
                           <span className="text-ink font-bold text-sm">
                             ${off.offeredAmount.toLocaleString()}.00

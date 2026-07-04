@@ -210,8 +210,17 @@ export const deductMerchantBalance = (amount: number): void => {
 export const repayInvoice = (id: string): boolean => {
   const inv = invoices.find(i => i.id === id);
   if (inv && inv.status === 'Financed') {
-    inv.status = 'Settled';
+    inv.status = 'Repaid';
     deductMerchantBalance(inv.amount);
+    return true;
+  }
+  return false;
+};
+
+export const settleInvoiceInMock = (id: string): boolean => {
+  const inv = invoices.find(i => i.id === id);
+  if (inv && inv.status === 'Repaid') {
+    inv.status = 'Settled';
     return true;
   }
   return false;

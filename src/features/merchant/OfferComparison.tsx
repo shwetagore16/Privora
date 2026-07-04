@@ -150,8 +150,11 @@ export const OfferComparison: React.FC = () => {
             const decryptedId = Number(decryptedVal);
             setDecryptedWinningOfferId(decryptedId);
 
-            // If contract status is already accepted, set success view directly
-            if (statData.isAccepted) {
+            // Check the accepted state directly from the blockchain to avoid MongoDB indexing delays
+            const onChainStatusEnum = Number(await offerMarket.getOfferStatus(decryptedId));
+            const isOfferAcceptedOnChain = onChainStatusEnum === 1 || statData.isAccepted;
+
+            if (isOfferAcceptedOnChain) {
               const matchedOffer = matchMockOffer({ offerId: decryptedId, lender: statData.lenderAddress || '' }, fetchedInvoice);
               if (matchedOffer) {
                 setSuccessState({

@@ -1,0 +1,24 @@
+{
+  "name": "contracts",
+  "version": "1.0.0",
+  "description": "Smart contracts (Fhenix/Solidity) go here — to be built during hackathon.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^6.1.2",
+    "hardhat": "^2.28.6",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@cofhe/hardhat-plugin": "^0.4.0",
+    "@cofhe/sdk": "^0.4.0",
+    "@fhenixprotocol/cofhe-contracts": "^0.1.0",
+    "dotenv": "^17.4.2"
+  }
+}

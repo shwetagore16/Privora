@@ -1,0 +1,135 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply text-ink bg-paper antialiased min-h-screen relative;
+    font-family: 'Inter', sans-serif;
+  }
+  
+  /* Global CSS-only paper grain overlay */
+  body::before {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    opacity: 0.038;
+    pointer-events: none;
+    z-index: 9999;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 250 250' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Fraunces', serif;
+    @apply text-ink font-semibold tracking-tight;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* Global visible focus states for keyboard navigation */
+  *:focus-visible {
+    outline: 2px solid #C4442E !important;
+    outline-offset: 2px !important;
+  }
+}
+
+
+@layer components {
+  /* Diagonal redaction hatching pattern */
+  .redaction-hatch {
+    background-color: #12180F;
+    background-image: repeating-linear-gradient(
+      -45deg,
+      transparent,
+      transparent 6px,
+      rgba(27, 58, 36, 0.35) 6px,
+      rgba(27, 58, 36, 0.35) 12px
+    );
+  }
+
+  /* Rubber stamp styling */
+  .rubber-stamp {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    font-family: 'Fraunces', serif;
+    font-weight: 800;
+    text-transform: uppercase;
+    border-radius: 2px;
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    mix-blend-mode: multiply;
+  }
+
+  .stamp-approved {
+    @apply text-ledger border-2 border-ledger;
+    transform: rotate(-2.5deg);
+    border-style: solid;
+  }
+
+  .stamp-financed {
+    @apply text-ledger border-4 border-ledger;
+    transform: rotate(-4deg);
+    border-style: double;
+    padding: 0.1rem 0.4rem;
+  }
+
+  .stamp-pending {
+    @apply text-sage-dark border-2 border-sage-dark;
+    transform: rotate(2deg);
+    border-style: dashed;
+  }
+
+  .stamp-sealed {
+    @apply text-seal border-2 border-seal;
+    transform: rotate(-1.5deg);
+    border-style: solid;
+    animation: stamp-press 0.15s cubic-bezier(0.175, 0.885, 0.32, 1.1);
+  }
+
+  @keyframes stamp-press {
+    0% {
+      transform: scale(1.5) rotate(-15deg);
+      opacity: 0;
+    }
+    100% {
+      transform: scale(1) rotate(-1.5deg);
+      opacity: 1;
+    }
+  }
+
+  .stamp-settled {
+    @apply text-ledger border-4 border-ledger;
+    transform: rotate(3deg);
+    border-style: double;
+    padding: 0.1rem 0.4rem;
+    animation: stamp-press 0.15s cubic-bezier(0.175, 0.885, 0.32, 1.1);
+  }
+
+  /* Toast Slide-In animation from corner */
+  @keyframes slide-in-toast {
+    0% {
+      transform: translateY(20px) scale(0.9) rotate(8deg);
+      opacity: 0;
+    }
+    100% {
+      transform: translateY(0) scale(1) rotate(-1.5deg);
+      opacity: 1;
+    }
+  }
+
+  .animate-toast-stamp {
+    animation: slide-in-toast 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.15) forwards;
+  }
+  
+  /* Ledger layout utilities */
+  .ledger-row {
+    @apply border-b border-sage/30 py-4 flex items-center justify-between transition-colors hover:bg-paper-light/50;
+  }
+}

@@ -2,10 +2,9 @@
   "services": {
     "frontend": {
       "root": ".",
-      "build": {
-        "command": "npm run build"
-      },
-      "outputDirectory": "dist"
+      "buildCommand": "npm run build",
+      "outputDirectory": "dist",
+      "installCommand": "npm install"
     }
   }
 }

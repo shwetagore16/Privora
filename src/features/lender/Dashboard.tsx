@@ -113,7 +113,7 @@ export const LenderDashboard: React.FC = () => {
           
           for (const rawOff of rawOffers) {
             const rawOffId = Number(rawOff.offerId);
-            const statusEnum = await offerMarket.getOfferStatus(rawOffId);
+            const statusEnum = Number(await offerMarket.getOfferStatus(rawOffId));
             
             let statusStrOffer: 'Pending' | 'Accepted' | 'Declined' = 'Pending';
             if (statusEnum === 1) {

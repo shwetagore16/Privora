@@ -1,10 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { getInvoices, getOffers, getYieldHistory } from '../../lib/mock-data';
 import RedactionBar from '../../components/RedactionBar';
-import { Lock, Unlock, LogOut, Eye, EyeOff, TrendingUp, ShoppingBag } from 'lucide-react';
+import { Lock, Unlock, LogOut, Eye, EyeOff, TrendingUp, ShoppingBag, Download } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
+import { useWeb3 } from '../../lib/web3/useWeb3';
+import { useToast } from '../../components/Toast';
+import { formatEther } from 'ethers';
 
 export const LenderDashboard: React.FC = () => {
   const { user, logout } = useAuth();
@@ -16,6 +19,50 @@ export const LenderDashboard: React.FC = () => {
 
   const [authorizedMap, setAuthorizedMap] = useState<Record<string, boolean>>({});
   const [showBalance, setShowBalance] = useState(false);
+  const [isSettling, setIsSettling] = useState<Record<string, boolean>>({});
+  const [ethBalance, setEthBalance] = useState<string>("0.00");
+
+  const { provider, account, connectWallet, getContract } = useWeb3();
+  const { showToast } = useToast();
+
+  useEffect(() => {
+    const fetchBalance = async () => {
+      if (provider && account) {
+        try {
+          const balance = await provider.getBalance(account);
+          setEthBalance(parseFloat(formatEther(balance)).toFixed(4));
+        } catch (e) {
+          console.error("Failed to fetch balance", e);
+        }
+      }
+    };
+    fetchBalance();
+  }, [provider, account]);
+
+  const handleSettleInvoice = async (invoiceId: string) => {
+    try {
+      if (!account) {
+        await connectWallet();
+        if (!account) return;
+      }
+      
+      setIsSettling(prev => ({ ...prev, [invoiceId]: true }));
+      const parsedInvoiceId = parseInt(invoiceId.replace('inv-', '')) || 1;
+      
+      const escrowContract = await getContract('Escrow');
+      const tx = await escrowContract.settleInvoice(parsedInvoiceId);
+      
+      showToast("Settlement Initiated", `Transaction submitted to Fhenix Helium-3. Tx: ${tx.hash}`, "received");
+      await tx.wait();
+      
+      showToast("Invoice Settled", `Funds have been transferred to your wallet successfully.`, "received");
+    } catch (err: any) {
+      console.error(err);
+      showToast("Error", "Failed to settle invoice: " + err.message, "due");
+    } finally {
+      setIsSettling(prev => ({ ...prev, [invoiceId]: false }));
+    }
+  };
 
   const handleLogout = () => {
     logout();
@@ -29,20 +76,28 @@ export const LenderDashboard: React.FC = () => {
     }));
   };
 
+  // Filter offers submitted by this specific lender
+  const currentUserWallet = account || user.walletAddress;
+  const myOffers = offers.filter(o => 
+    currentUserWallet && o.lenderAddress?.toLowerCase() === currentUserWallet.toLowerCase()
+  );
+
   // 1. Expected Yield: calculate average discount rate of accepted positions
-  const acceptedOffers = offers.filter(o => o.status === 'Accepted');
+  const acceptedOffers = myOffers.filter(o => o.status === 'Accepted');
   const totalOffered = acceptedOffers.reduce((sum, o) => sum + o.offeredAmount, 0);
   const averageYield = acceptedOffers.length > 0 
     ? (acceptedOffers.reduce((sum, o) => sum + o.discountRate, 0) / acceptedOffers.length).toFixed(2)
-    : '2.10';
+    : '0.00';
 
   // 2. Active Positions: count of accepted deals not yet fully repaid
   const activePositionsCount = acceptedOffers.length;
 
-  // 3. Funded Invoices Portfolio
-  const fundedInvoices = invoices.filter(inv => 
-    inv.status === 'Financed' || inv.status === 'Repaid'
-  );
+  // 3. Funded Invoices Portfolio (only invoices where this lender won the bid)
+  const fundedInvoices = invoices.filter(inv => {
+    if (inv.status !== 'Financed' && inv.status !== 'Repaid' && inv.status !== 'Settled') return false;
+    const winningOffer = offers.find(o => o.invoiceId === inv.id && o.status === 'Accepted');
+    return winningOffer && currentUserWallet && winningOffer.lenderAddress?.toLowerCase() === currentUserWallet.toLowerCase();
+  });
 
   // Helper to calculate days remaining
   const calculateDaysRemaining = (dueDateStr: string): string => {
@@ -126,19 +181,30 @@ export const LenderDashboard: React.FC = () => {
             <div>
               <span className="font-mono text-[9px] text-sage font-bold uppercase block mb-1">WALLET BALANCE</span>
               <div className="flex items-center gap-2">
-                <RedactionBar 
-                  value="$750,000.00 USD" 
-                  ciphertext="0x8d5c4b3a...a8f7" 
-                  authorized={showBalance} 
-                  className="text-base"
-                />
-                <button 
-                  onClick={() => setShowBalance(!showBalance)}
-                  className="p-1 hover:text-ledger transition-colors text-sage shrink-0"
-                  title="Toggle balance visibility"
-                >
-                  {showBalance ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
+                {account ? (
+                  <>
+                    <RedactionBar 
+                      value={`${ethBalance} ETH (~$${(parseFloat(ethBalance) * 3000).toLocaleString(undefined, {maximumFractionDigits:2})} USD)`} 
+                      ciphertext={account.substring(0, 10) + '...'} 
+                      authorized={showBalance} 
+                      className="text-sm font-semibold"
+                    />
+                    <button 
+                      onClick={() => setShowBalance(!showBalance)}
+                      className="p-1 hover:text-ledger transition-colors text-sage shrink-0"
+                      title="Toggle balance visibility"
+                    >
+                      {showBalance ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </>
+                ) : (
+                  <button 
+                    onClick={connectWallet}
+                    className="text-xs font-mono font-bold text-ledger border border-ledger/20 px-3 py-1.5 rounded bg-ledger/5 hover:bg-ledger/10 transition-colors"
+                  >
+                    CONNECT METAMASK
+                  </button>
+                )}
               </div>
             </div>
             <span className="text-[9px] text-sage font-mono block mt-2">CONNECTED ESCROW CAPITAL</span>
@@ -179,67 +245,128 @@ export const LenderDashboard: React.FC = () => {
         {/* Dashboard Content Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           
-          {/* Portfolio Table */}
-          <div className="lg:col-span-7 bg-paper-light border border-ledger/20 p-6 md:p-8 rounded shadow-sm">
-            <div className="pb-4 mb-6 border-b border-ledger/20">
-              <h3 className="font-display text-lg font-bold text-ink uppercase tracking-tight font-semibold">Active Portfolio Positions</h3>
-              <p className="font-mono text-[9px] text-sage">INVOICES CURRENTLY FINANCED & SECURED</p>
+          {/* Portfolio Table & My Submitted Bids */}
+          <div className="lg:col-span-7 space-y-8">
+            <div className="bg-paper-light border border-ledger/20 p-6 md:p-8 rounded shadow-sm">
+              <div className="pb-4 mb-6 border-b border-ledger/20">
+                <h3 className="font-display text-lg font-bold text-ink uppercase tracking-tight font-semibold">Active Portfolio Positions</h3>
+                <p className="font-mono text-[9px] text-sage">INVOICES CURRENTLY FINANCED & SECURED</p>
+              </div>
+
+              <div className="overflow-x-auto">
+                {fundedInvoices.length === 0 ? (
+                  <p className="text-xs text-sage font-mono">No active portfolio positions yet. Bids must be accepted by merchants first.</p>
+                ) : (
+                  <table className="w-full text-left font-mono text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-ledger/20 text-sage text-[10px]">
+                        <th className="py-2.5">INVOICE ID</th>
+                        <th className="py-2.5">DEBTOR (BUYER)</th>
+                        <th className="py-2.5 text-right">CAPITAL FUNDED</th>
+                        <th className="py-2.5 text-center">MATURITY COUNTDOWN</th>
+                        <th className="py-2.5 text-center">STATUS</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-sage/20">
+                      {fundedInvoices.map((inv) => {
+                        const isDecrypted = authorizedMap[inv.id] || false;
+                        const offer = offers.find(o => o.invoiceId === inv.id && o.status === 'Accepted');
+                        const fundedAmount = offer ? offer.offeredAmount : inv.financedAmount || (inv.amount * 0.98);
+
+                        return (
+                          <tr key={inv.id} className="hover:bg-paper/50 transition-colors">
+                            <td className="py-4 font-semibold text-ink">{inv.invoiceNumber}</td>
+                            <td className="py-4">
+                              <div className="flex items-center gap-1.5">
+                                <RedactionBar 
+                                  value={inv.debtorName} 
+                                  ciphertext={inv.encryptedDebtor} 
+                                  authorized={isDecrypted} 
+                                />
+                                <button
+                                  onClick={() => toggleInvoiceDecrypt(inv.id)}
+                                  className="p-1 hover:text-ledger transition-colors text-sage"
+                                  title={isDecrypted ? "Re-encrypt data" : "Request decrypt permit"}
+                                >
+                                  {isDecrypted ? <Lock className="w-3 h-3 text-seal" /> : <Unlock className="w-3 h-3" />}
+                                </button>
+                              </div>
+                            </td>
+                            <td className="py-4 text-right font-semibold">
+                              ${fundedAmount.toLocaleString()}.00
+                            </td>
+                            <td className="py-4 text-center font-bold text-ink-light">
+                              {calculateDaysRemaining(inv.dueDate)}
+                            </td>
+                            <td className="py-4 text-center">
+                              {inv.status === 'Repaid' ? (
+                                <button
+                                  onClick={() => handleSettleInvoice(inv.id)}
+                                  disabled={isSettling[inv.id]}
+                                  className="flex items-center justify-center gap-1 mx-auto bg-sage text-paper hover:bg-sage/90 text-[9px] font-bold px-3 py-1.5 rounded disabled:opacity-50 transition-colors"
+                                >
+                                  <Download className="w-3 h-3" />
+                                  {isSettling[inv.id] ? 'SETTLING...' : 'WITHDRAW YIELD'}
+                                </button>
+                              ) : (
+                                <span className={`rubber-stamp ${
+                                  inv.status === 'Settled' ? 'stamp-approved' : 'stamp-financed'
+                                } text-[9px]`}>
+                                  {inv.status}
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left font-mono text-xs border-collapse">
-                <thead>
-                  <tr className="border-b border-ledger/20 text-sage text-[10px]">
-                    <th className="py-2.5">INVOICE ID</th>
-                    <th className="py-2.5">DEBTOR (BUYER)</th>
-                    <th className="py-2.5 text-right">CAPITAL FUNDED</th>
-                    <th className="py-2.5 text-center">MATURITY COUNTDOWN</th>
-                    <th className="py-2.5 text-center">STATUS</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-sage/20">
-                  {fundedInvoices.map((inv) => {
-                    const isDecrypted = authorizedMap[inv.id] || false;
-                    const offer = offers.find(o => o.invoiceId === inv.id && o.status === 'Accepted');
-                    const fundedAmount = offer ? offer.offeredAmount : inv.financedAmount || (inv.amount * 0.98);
+            <div className="bg-paper-light border border-ledger/20 p-6 md:p-8 rounded shadow-sm">
+              <div className="pb-4 mb-6 border-b border-ledger/20">
+                <h3 className="font-display text-lg font-bold text-ink uppercase tracking-tight font-semibold">My Submitted Bids</h3>
+                <p className="font-mono text-[9px] text-sage">TRACK ALL CONFIDENTIAL BID PROPOSALS</p>
+              </div>
 
-                    return (
-                      <tr key={inv.id} className="hover:bg-paper/50 transition-colors">
-                        <td className="py-4 font-semibold text-ink">{inv.invoiceNumber}</td>
-                        <td className="py-4">
-                          <div className="flex items-center gap-1.5">
-                            <RedactionBar 
-                              value={inv.debtorName} 
-                              ciphertext={inv.encryptedDebtor} 
-                              authorized={isDecrypted} 
-                            />
-                            <button
-                              onClick={() => toggleInvoiceDecrypt(inv.id)}
-                              className="p-1 hover:text-ledger transition-colors text-sage"
-                              title={isDecrypted ? "Re-encrypt data" : "Request decrypt permit"}
-                            >
-                              {isDecrypted ? <Lock className="w-3 h-3 text-seal" /> : <Unlock className="w-3 h-3" />}
-                            </button>
-                          </div>
-                        </td>
-                        <td className="py-4 text-right font-semibold">
-                          ${fundedAmount.toLocaleString()}.00
-                        </td>
-                        <td className="py-4 text-center font-bold text-ink-light">
-                          {calculateDaysRemaining(inv.dueDate)}
-                        </td>
-                        <td className="py-4 text-center">
-                          <span className={`rubber-stamp ${
-                            inv.status === 'Repaid' ? 'stamp-approved' : 'stamp-financed'
-                          } text-[9px]`}>
-                            {inv.status}
-                          </span>
-                        </td>
+              <div className="overflow-x-auto">
+                {myOffers.length === 0 ? (
+                  <p className="text-xs text-sage font-mono">You have not submitted any bids yet. Visit the Marketplace to place bids.</p>
+                ) : (
+                  <table className="w-full text-left font-mono text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-ledger/20 text-sage text-[10px]">
+                        <th className="py-2.5">INVOICE ID</th>
+                        <th className="py-2.5 text-right">CAPITAL BID</th>
+                        <th className="py-2.5 text-center">RATE (%)</th>
+                        <th className="py-2.5 text-center">TERM</th>
+                        <th className="py-2.5 text-center">STATUS</th>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                    </thead>
+                    <tbody className="divide-y divide-sage/20">
+                      {myOffers.map((off) => (
+                        <tr key={off.id} className="hover:bg-paper/50 transition-colors">
+                          <td className="py-4 font-semibold text-ink">{off.invoiceNumber}</td>
+                          <td className="py-4 text-right font-semibold">${off.offeredAmount.toLocaleString()}.00</td>
+                          <td className="py-4 text-center text-ledger font-semibold">{off.discountRate.toFixed(2)}%</td>
+                          <td className="py-4 text-center">{off.repaymentTermDays} Days</td>
+                          <td className="py-4 text-center">
+                            <span className={`rubber-stamp ${
+                              off.status === 'Accepted' ? 'stamp-financed' :
+                              off.status === 'Declined' ? 'stamp-settled border-seal/40 text-seal/80' :
+                              'stamp-pending'
+                            } text-[9px]`}>
+                              {off.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
           </div>
 

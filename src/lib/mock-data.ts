@@ -25,6 +25,7 @@ export interface MockLenderOffer {
   invoiceId: string;
   invoiceNumber: string;
   lenderName: string;
+  lenderAddress?: string;
   requestedAmount: number;
   offeredAmount: number;
   discountRate: number; // in %

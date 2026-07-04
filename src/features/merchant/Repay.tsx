@@ -4,11 +4,14 @@ import { getInvoices, repayInvoice, getMerchantBalance, addActivity } from '../.
 import { useToast } from '../../components/Toast';
 import RedactionBar from '../../components/RedactionBar';
 import { ArrowLeft, Lock, Unlock, Eye, EyeOff, RefreshCw, Shield, CheckCircle } from 'lucide-react';
+import { useWeb3 } from '../../lib/web3/useWeb3';
+import { parseEther } from 'ethers';
 
 export const Repay: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { showToast } = useToast();
+  const { account, connectWallet, getContract } = useWeb3();
   
   const invoices = getInvoices();
   const invoice = invoices.find(inv => inv.id === id);
@@ -29,28 +32,46 @@ export const Repay: React.FC = () => {
   }
 
   const handleRepay = async () => {
-    // Check if merchant has enough balance in the simulation
-    const balance = getMerchantBalance();
-    if (balance < invoice.amount) {
-      showToast("Repayment Failed", "Insufficient funds in merchant private treasury.", "due");
-      return;
+    if (!account) {
+      await connectWallet();
+      if (!account) return;
     }
 
-    setIsProcessing(true);
+    try {
+      setIsProcessing(true);
 
-    // Simulate homomorphic escrow settlement delay
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+      const parsedInvoiceId = parseInt(invoice.id.replace('inv-', '')) || 1;
+      const escrowContract = await getContract('Escrow');
 
-    const success = repayInvoice(invoice.id);
-    setIsProcessing(false);
+      // The repayment amount in ETH is face amount / 100000
+      const repaymentAmountInEth = (invoice.amount / 100000).toString();
+      const valueToSend = parseEther(repaymentAmountInEth);
 
-    if (success) {
-      setSettledState(true);
-      addActivity(`Repayment cleared for ${invoice.invoiceNumber}. Escrow security deposits released.`, 'repay');
-      showToast("Repayment Settled", `Invoice ${invoice.invoiceNumber} payment of $${invoice.amount.toLocaleString()}.00 cleared.`, "accepted");
-      showToast("Escrow Released", "Shielded escrow vault unlocked and collateral released to creditor.", "released");
-    } else {
-      showToast("Repayment Failed", "Escrow verification check failed.", "due");
+      const tx = await escrowContract.repay(parsedInvoiceId, { value: valueToSend });
+      showToast("Repayment Broadcasted", `Transaction: ${tx.hash}`, "received");
+
+      await tx.wait();
+
+      const success = repayInvoice(invoice.id);
+      setIsProcessing(false);
+
+      if (success) {
+        setSettledState(true);
+        addActivity(`Repayment cleared for ${invoice.invoiceNumber}. Escrow security deposits released.`, 'repay');
+        showToast("Repayment Settled", `Invoice ${invoice.invoiceNumber} payment of $${invoice.amount.toLocaleString()}.00 cleared.`, "accepted");
+        showToast("Escrow Released", "Shielded escrow vault unlocked and collateral released to creditor.", "released");
+      } else {
+        showToast("Repayment Failed", "Escrow verification check failed.", "due");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setIsProcessing(false);
+
+      let errMsg = err.message || "Unknown error";
+      if (err.reason) errMsg = err.reason;
+      if (err.data && err.data.message) errMsg = err.data.message;
+
+      showToast("Repayment Failed", `Failed: ${errMsg.substring(0, 50)}...`, "due");
     }
   };
 

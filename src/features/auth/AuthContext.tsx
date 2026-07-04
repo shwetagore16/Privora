@@ -32,7 +32,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const loginWithWallet = async (role: 'merchant' | 'lender' | 'admin'): Promise<string> => {
-    // Simulate wallet connection latency
+    const ethereum = (window as any).ethereum;
+    if (ethereum) {
+      try {
+        const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+        const walletAddress = accounts[0];
+        setUser({ role, walletAddress });
+        return walletAddress;
+      } catch (err) {
+        console.error("Wallet connection failed", err);
+        throw err;
+      }
+    }
+    // Fallback if no window.ethereum
     await new Promise((resolve) => setTimeout(resolve, 800));
     const walletAddress = generateMockAddress();
     setUser({ role, walletAddress });
@@ -47,9 +59,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signup = async (businessName: string, email: string, role: 'merchant' | 'lender'): Promise<string> => {
-    // Simulate signup and wallet key generation latency
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    const walletAddress = generateMockAddress();
+    const ethereum = (window as any).ethereum;
+    let walletAddress = "";
+    if (ethereum) {
+      try {
+        const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+        walletAddress = accounts[0];
+      } catch (err) {
+        console.error("Wallet connection failed during signup", err);
+      }
+    }
+    if (!walletAddress) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      walletAddress = generateMockAddress();
+    }
     setUser({ role, walletAddress, businessName, email });
     return walletAddress;
   };

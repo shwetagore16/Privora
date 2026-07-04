@@ -6,11 +6,14 @@ import { useToast } from '../../components/Toast';
 import { mockEncrypt } from '../../lib/mock-encryption';
 import RedactionBar from '../../components/RedactionBar';
 import { LogOut, SlidersHorizontal, Cpu, Database, CheckCircle, LayoutDashboard } from 'lucide-react';
+import { useWeb3 } from '../../lib/web3/useWeb3';
+import { Encryptable } from '@cofhe/sdk';
 
 export const Marketplace: React.FC = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const { showToast } = useToast();
+  const { account, connectWallet, getContract, cofheClient } = useWeb3();
   
   // States for filter
   const [selectedRisk, setSelectedRisk] = useState<string>('All');
@@ -58,65 +61,99 @@ export const Marketplace: React.FC = () => {
     e.preventDefault();
     if (!selectedInvoice || !discountBid) return;
 
+    if (!account) {
+      await connectWallet();
+      if (!account) return;
+    }
+
+    if (!cofheClient) {
+      showToast("Error", "Fhenix client not initialized", "due");
+      return;
+    }
+
     const rate = parseFloat(discountBid);
     const calculatedOffer = selectedInvoice.amount * (1 - rate / 100);
     setOfferedVal(Math.round(calculatedOffer));
 
     setLogs(['[SYSTEM] Initializing lender FHEVM private bid tunnel...']);
-    setTxHash(`0x${Math.abs(Math.random() * 99999999).toString(16).padEnd(64, 'e')}`);
 
     // Pre-calculate ciphers
     setRateCipher(mockEncrypt(`${rate}%`));
     setAmountCipher(mockEncrypt(`$${Math.round(calculatedOffer).toLocaleString()}.00`));
 
-    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    try {
+      // Phase 1 & 2: Encrypt Data with CoFHE
+      setCeremonyState('encrypting_rate');
+      setLogs(prev => [...prev, `[OP_ENCRYPT_UINT] Input Rate: ${rate}%`]);
+      setLogs(prev => [...prev, `[OP_ENCRYPT_UINT] Input Amount: $${Math.round(calculatedOffer).toLocaleString()}.00`]);
+      
+      const parsedInvoiceId = parseInt(selectedInvoice.id.replace('inv-', '')) || 1; // Assuming numeric IDs in real SC
+      const rateEuint = Encryptable.uint64(BigInt(Math.round(rate * 100))); // scaling rate to integer if needed
+      const amountEuint = Encryptable.uint64(BigInt(Math.round(calculatedOffer)));
+      
+      const encrypted = await cofheClient.encryptInputs([rateEuint, amountEuint]).execute();
+      
+      setRateSealed(true);
+      setAmountSealed(true);
+      setLogs(prev => [...prev, ` -> Yield & Capital Ciphertexts secured.`]);
 
-    // Phase 1: Encrypt Discount Rate
-    setCeremonyState('encrypting_rate');
-    setLogs(prev => [...prev, `[OP_ENCRYPT_UINT] Input Rate: ${rate}%`]);
-    await delay(500);
-    setRateSealed(true);
-    setLogs(prev => [...prev, ` -> Yield Ciphertext: ${mockEncrypt(rate.toString()).substring(0, 16)}...`]);
-    await delay(300);
+      // Phase 3 & 4: Smart Contract Call
+      setCeremonyState('signing_proof');
+      setLogs(prev => [...prev, `[DKG_THRESHOLD] Submitting offer to smart contract...`]);
+      
+      const offerMarket = await getContract('OfferMarket');
+      const tx = await offerMarket.submitOffer(
+        parsedInvoiceId,
+        {
+          ctHash: encrypted[0].ctHash,
+          securityZone: encrypted[0].securityZone,
+          utype: encrypted[0].utype,
+          signature: encrypted[0].signature
+        },
+        {
+          ctHash: encrypted[1].ctHash,
+          securityZone: encrypted[1].securityZone,
+          utype: encrypted[1].utype,
+          signature: encrypted[1].signature
+        }
+      );
+      
+      setCeremonyState('broadcasting');
+      setLogs(prev => [...prev, `[FHEVM_BLOCK] Broadcasting commitment proof... Tx: ${tx.hash}`]);
+      setTxHash(tx.hash);
+      
+      await tx.wait();
 
-    // Phase 2: Encrypt Capital Offer Amount
-    setCeremonyState('encrypting_amount');
-    setLogs(prev => [...prev, `[OP_ENCRYPT_UINT] Input Amount: $${Math.round(calculatedOffer).toLocaleString()}.00`]);
-    await delay(500);
-    setAmountSealed(true);
-    setLogs(prev => [...prev, ` -> Capital Ciphertext: ${mockEncrypt(calculatedOffer.toString()).substring(0, 16)}...`]);
-    await delay(300);
+      // Add to in-memory offers list (Fallback for mock data state)
+      const newOffer: MockLenderOffer = {
+        id: `off-${Date.now()}`,
+        invoiceId: selectedInvoice.id,
+        invoiceNumber: selectedInvoice.invoiceNumber,
+        lenderName: user.businessName || 'Horizon Capital Partners',
+        lenderAddress: account || user.walletAddress || undefined,
+        requestedAmount: selectedInvoice.amount,
+        offeredAmount: Math.round(calculatedOffer),
+        discountRate: rate,
+        repaymentTermDays: parseInt(termDays),
+        status: 'Pending',
+        createdAt: new Date().toISOString().split('T')[0]
+      };
+      addOffer(newOffer);
 
-    // Phase 3: ZK Proof Threshold Signing
-    setCeremonyState('signing_proof');
-    setLogs(prev => [...prev, `[DKG_THRESHOLD] Computing covenant validity keys with validator nodes...`]);
-    await delay(600);
-    setLogs(prev => [...prev, ` -> Threshold zero-knowledge key parameters verified.`]);
-    await delay(300);
-
-    // Phase 4: Broadcast commitment to Helium-3
-    setCeremonyState('broadcasting');
-    setLogs(prev => [...prev, `[FHEVM_BLOCK] Broadcasting commitment proof to Fhenix Helium-3...`]);
-    await delay(700);
-
-    // Add to in-memory offers list
-    const newOffer: MockLenderOffer = {
-      id: `off-${Date.now()}`,
-      invoiceId: selectedInvoice.id,
-      invoiceNumber: selectedInvoice.invoiceNumber,
-      lenderName: user.businessName || 'Horizon Capital Partners',
-      requestedAmount: selectedInvoice.amount,
-      offeredAmount: Math.round(calculatedOffer),
-      discountRate: rate,
-      repaymentTermDays: parseInt(termDays),
-      status: 'Pending',
-      createdAt: new Date().toISOString().split('T')[0]
-    };
-    addOffer(newOffer);
-
-    setLogs(prev => [...prev, `[SYSTEM] Commitment block cleared. Bid offer lodged successfully.`]);
-    showToast("Offer Submitted", `Bid offer for ${selectedInvoice.invoiceNumber} has been encrypted and registered.`, "received");
-    setCeremonyState('completed');
+      setLogs(prev => [...prev, `[SYSTEM] Commitment block cleared. Bid offer lodged successfully.`]);
+      showToast("Offer Submitted", `Bid offer for ${selectedInvoice.invoiceNumber} has been encrypted and registered.`, "received");
+      setCeremonyState('completed');
+    } catch (err: any) {
+      console.error(err);
+      setLogs(prev => [...prev, `[ERROR] Failed to submit offer: ${err.message}`]);
+      setCeremonyState('idle');
+      
+      let errMsg = err.message || "Unknown error";
+      if (err.reason) errMsg = err.reason;
+      if (err.data && err.data.message) errMsg = err.data.message;
+      
+      showToast("Error", `Failed to submit offer: ${errMsg.substring(0, 50)}...`, "due");
+    }
   };
 
   // Filter conditions

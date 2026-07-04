@@ -122,10 +122,13 @@ export const LenderDashboard: React.FC = () => {
               statusStrOffer = 'Declined';
             }
 
-            const matchingMockOffer = currentMockOffers.find(o => 
+            let matchingMockOffer = currentMockOffers.find(o => 
               o.invoiceId === invoiceIdStr && 
               o.lenderAddress?.toLowerCase() === rawOff.lender.toLowerCase()
             );
+            if (!matchingMockOffer) {
+              matchingMockOffer = currentMockOffers.find(o => o.invoiceId === invoiceIdStr);
+            }
 
             // Construct/enrich mock offer structure
             fetchedOffers.push({

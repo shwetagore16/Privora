@@ -207,6 +207,11 @@ export const OfferComparison: React.FC = () => {
     if (invoiceMockOffers.length > 0) {
       return invoiceMockOffers[0];
     }
+
+    const fallbackOffers = getOffers().filter(o => o.invoiceId === invoiceIdStr);
+    if (fallbackOffers.length > 0) {
+      return fallbackOffers[0];
+    }
     
     // Fallback: Generate a deterministic mock offer so the page ALWAYS works and shows data!
     const rate = 1.5 + (onChainOff.offerId % 5) * 0.1;

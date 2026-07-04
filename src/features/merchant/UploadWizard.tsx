@@ -44,22 +44,25 @@ export const UploadWizard: React.FC = () => {
   const [dueCipher, setDueCipher] = useState('');
   const [termsCipher, setTermsCipher] = useState('');
 
-  // Mock file selector click
   const triggerFileSelect = () => {
-    startMockUpload('invoice_tesla.pdf', 245100);
+    fileInputRef.current?.click();
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      startMockUpload(file.name, file.size);
+  const processFile = (file: File) => {
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      showToast("Validation Error", "Attached document must be a PDF file.", "due");
+      return;
     }
-  };
 
-  const startMockUpload = (name: string, size: number) => {
-    setFileName(name);
-    const sizeKB = Math.round(size / 1024);
-    setFileSize(`${sizeKB} KB`);
+    let sizeStr = '';
+    if (file.size < 1024 * 1024) {
+      sizeStr = `${Math.round(file.size / 1024)} KB`;
+    } else {
+      sizeStr = `${(file.size / (1024 * 1024)).toFixed(2)} MB`;
+    }
+
+    setFileName(file.name);
+    setFileSize(sizeStr);
     setIsUploadingFile(true);
     setUploadProgress(0);
 
@@ -73,6 +76,21 @@ export const UploadWizard: React.FC = () => {
         return prev + 25;
       });
     }, 200);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processFile(file);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      processFile(file);
+    }
   };
 
   // Run the deliberate on-chain encryption ceremony
@@ -380,6 +398,8 @@ export const UploadWizard: React.FC = () => {
                 {/* Drag Drop Box */}
                 <div 
                   onClick={triggerFileSelect}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={handleDrop}
                   className="border-2 border-dashed border-ledger/30 hover:border-ledger bg-paper p-8 rounded text-center cursor-pointer transition-all flex flex-col items-center justify-center gap-3"
                 >
                   <input 

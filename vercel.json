@@ -6,5 +6,8 @@
       "outputDirectory": "dist",
       "installCommand": "npm install"
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
 }

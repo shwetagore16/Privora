@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getInvoices, getOffers, addActivity, type MockLenderOffer } from '../../lib/mock-data';
+import { getInvoices, getOffers, addActivity, type MockLenderOffer, saveData } from '../../lib/mock-data';
 import { ArrowLeft, Check, Building, ShieldCheck } from 'lucide-react';
 import { useToast } from '../../components/Toast';
 
@@ -51,6 +51,7 @@ export const OfferComparison: React.FC = () => {
         }
       }
     });
+    saveData();
 
     // 3. Trigger dynamic logs and stamps toasts
     addActivity(`Bid accepted for ${invoice.invoiceNumber}. Escrow funding of $${offer.offeredAmount.toLocaleString()}.00 cleared.`, 'accept');

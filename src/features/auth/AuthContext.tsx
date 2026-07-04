@@ -19,7 +19,23 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User>({ role: null, walletAddress: null });
+  const [user, setUser] = useState<User>(() => {
+    try {
+      const saved = localStorage.getItem('privora_user');
+      return saved ? JSON.parse(saved) : { role: null, walletAddress: null };
+    } catch (e) {
+      return { role: null, walletAddress: null };
+    }
+  });
+
+  const saveUser = (newUser: User) => {
+    setUser(newUser);
+    try {
+      localStorage.setItem('privora_user', JSON.stringify(newUser));
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   // Generate random fake FHE wallet address
   const generateMockAddress = (): string => {
@@ -37,7 +53,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
         const walletAddress = accounts[0];
-        setUser({ role, walletAddress });
+        saveUser({ role, walletAddress });
         return walletAddress;
       } catch (err) {
         console.error("Wallet connection failed", err);
@@ -47,7 +63,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Fallback if no window.ethereum
     await new Promise((resolve) => setTimeout(resolve, 800));
     const walletAddress = generateMockAddress();
-    setUser({ role, walletAddress });
+    saveUser({ role, walletAddress });
     return walletAddress;
   };
 
@@ -55,7 +71,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Simulate OTP validation latency
     await new Promise((resolve) => setTimeout(resolve, 800));
     const walletAddress = `0x${email.substring(0, 4).padEnd(4, 'f')}...fhe`;
-    setUser({ role, walletAddress, email });
+    saveUser({ role, walletAddress, email });
   };
 
   const signup = async (businessName: string, email: string, role: 'merchant' | 'lender'): Promise<string> => {
@@ -73,12 +89,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await new Promise((resolve) => setTimeout(resolve, 1000));
       walletAddress = generateMockAddress();
     }
-    setUser({ role, walletAddress, businessName, email });
+    saveUser({ role, walletAddress, businessName, email });
     return walletAddress;
   };
 
   const logout = () => {
-    setUser({ role: null, walletAddress: null });
+    saveUser({ role: null, walletAddress: null });
   };
 
   const isAuthenticated = user.role !== null;

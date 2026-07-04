@@ -39,8 +39,25 @@ export interface YieldDataPoint {
   yieldRate: number;
 }
 
-// Memory arrays
-let invoices: MockInvoice[] = [
+const loadFromLocalStorage = <T>(key: string, defaultValue: T): T => {
+  try {
+    const item = localStorage.getItem(key);
+    return item ? JSON.parse(item) : defaultValue;
+  } catch (error) {
+    return defaultValue;
+  }
+};
+
+const saveToLocalStorage = <T>(key: string, value: T): void => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (error) {
+    console.error("LocalStorage save failed", error);
+  }
+};
+
+// Memory arrays initial values
+const initialInvoices: MockInvoice[] = [
   {
     id: "inv-001",
     invoiceNumber: "INV-2026-001",
@@ -118,7 +135,7 @@ let invoices: MockInvoice[] = [
   }
 ];
 
-let offers: MockLenderOffer[] = [
+const initialOffers: MockLenderOffer[] = [
   {
     id: "off-001",
     invoiceId: "inv-001",
@@ -182,6 +199,9 @@ let offers: MockLenderOffer[] = [
   }
 ];
 
+let invoices: MockInvoice[] = loadFromLocalStorage('privora_invoices', initialInvoices);
+let offers: MockLenderOffer[] = loadFromLocalStorage('privora_offers', initialOffers);
+
 const yieldHistory: YieldDataPoint[] = [
   { month: 'Jan', yieldRate: 1.65 },
   { month: 'Feb', yieldRate: 1.72 },
@@ -195,23 +215,27 @@ const yieldHistory: YieldDataPoint[] = [
 export const getInvoices = (): MockInvoice[] => invoices;
 export const addInvoice = (invoice: MockInvoice): void => {
   invoices = [invoice, ...invoices];
+  saveData();
 };
 export const getOffers = (): MockLenderOffer[] => offers;
 export const addOffer = (offer: MockLenderOffer): void => {
   offers = [offer, ...offers];
+  saveData();
 };
 export const getYieldHistory = (): YieldDataPoint[] => yieldHistory;
 
-let merchantBalance = 250000;
+let merchantBalance: number = loadFromLocalStorage('privora_merchant_balance', 250000);
 export const getMerchantBalance = (): number => merchantBalance;
 export const deductMerchantBalance = (amount: number): void => {
   merchantBalance = Math.max(0, merchantBalance - amount);
+  saveData();
 };
 export const repayInvoice = (id: string): boolean => {
   const inv = invoices.find(i => i.id === id);
   if (inv && inv.status === 'Financed') {
     inv.status = 'Repaid';
     deductMerchantBalance(inv.amount);
+    saveData();
     return true;
   }
   return false;
@@ -221,6 +245,7 @@ export const settleInvoiceInMock = (id: string): boolean => {
   const inv = invoices.find(i => i.id === id);
   if (inv && inv.status === 'Repaid') {
     inv.status = 'Settled';
+    saveData();
     return true;
   }
   return false;
@@ -233,12 +258,14 @@ export interface MockActivity {
   date: string;
 }
 
-let activities: MockActivity[] = [
+const initialActivities: MockActivity[] = [
   { id: 'act-1', event: 'FHE Decryption View Permit generated for Horizon Capital Partners', type: 'permit', date: '2026-07-02 19:40:12' },
   { id: 'act-2', event: 'Bid offer off-001 received from Horizon Capital Partners (1.8% discount)', type: 'bid', date: '2026-07-02 19:35:45' },
   { id: 'act-3', event: 'Escrow vault established for invoice INV-2026-002', type: 'escrow', date: '2026-07-02 16:45:22' },
   { id: 'act-4', event: 'Funding drawn: $117,600.00 transferred from Apex Liquidity Partners vault', type: 'fund', date: '2026-07-02 16:40:10' }
 ];
+
+let activities: MockActivity[] = loadFromLocalStorage('privora_activities', initialActivities);
 
 export const getActivities = (): MockActivity[] => activities;
 export const addActivity = (event: string, type: string): void => {
@@ -249,4 +276,12 @@ export const addActivity = (event: string, type: string): void => {
     date: new Date().toISOString().replace('T', ' ').substring(0, 19)
   };
   activities = [newAct, ...activities];
+  saveData();
+};
+
+export const saveData = (): void => {
+  saveToLocalStorage('privora_invoices', invoices);
+  saveToLocalStorage('privora_offers', offers);
+  saveToLocalStorage('privora_merchant_balance', merchantBalance);
+  saveToLocalStorage('privora_activities', activities);
 };

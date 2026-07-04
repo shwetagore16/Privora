@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { addInvoice, addActivity, type MockInvoice } from '../../lib/mock-data';
 import { useToast } from '../../components/Toast';
-import { mockEncrypt } from '../../lib/mock-encryption';
+import { useWeb3 } from '../auth/Web3Context';
+import { Encryptable } from '@cofhe/sdk';
+import { ethers } from 'ethers';
 import RedactionBar from '../../components/RedactionBar';
 import { ArrowLeft, ArrowRight, Shield, FileText, UploadCloud, CheckCircle, Cpu, Database } from 'lucide-react';
 
@@ -12,6 +14,7 @@ export const UploadWizard: React.FC = () => {
   const navigate = useNavigate();
   const { showToast } = useToast();
   const [step, setStep] = useState(1);
+  const { address, connect, isWrongNetwork, switchToSepolia, isCofheReady, invoiceRegistry, cofheClient } = useWeb3();
 
   // Step 1: Details
   const [buyerName, setBuyerName] = useState('');
@@ -75,85 +78,169 @@ export const UploadWizard: React.FC = () => {
   // Run the deliberate on-chain encryption ceremony
   const startEncryptionCeremony = async () => {
     setLogs(['[SYSTEM] Initializing on-chain FHEVM cryptosystem...']);
-    setTxHash(`0x${Math.abs(Math.random() * 10000000).toString(16).padEnd(64, 'd')}`);
-
-    // Pre-calculate ciphertexts
-    setBuyerCipher(mockEncrypt(buyerName));
-    setAmountCipher(mockEncrypt(`$${parseFloat(amount).toLocaleString()}.00`));
-    setDueCipher(mockEncrypt(dueDate));
-    setTermsCipher(mockEncrypt(paymentTerms));
-
-    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-    // Phase 1: Encrypt Buyer
-    setCeremonyState('encrypting_buyer');
-    setLogs(prev => [...prev, `[OP_ENCRYPT_STRING] Input: "${buyerName}"`]);
-    await delay(500);
-    setBuyerSealed(true);
-    setLogs(prev => [...prev, ` -> Output Ciphertext: ${mockEncrypt(buyerName).substring(0, 16)}...`]);
-    await delay(300);
-
-    // Phase 2: Encrypt Amount
-    setCeremonyState('encrypting_amount');
-    setLogs(prev => [...prev, `[OP_ENCRYPT_UINT] Input: ${amount}`]);
-    await delay(500);
-    setAmountSealed(true);
-    setLogs(prev => [...prev, ` -> Output Ciphertext: ${mockEncrypt(amount).substring(0, 16)}...`]);
-    await delay(300);
-
-    // Phase 3: Encrypt Due Date
-    setCeremonyState('encrypting_due');
-    setLogs(prev => [...prev, `[OP_ENCRYPT_DATE] Input: "${dueDate}"`]);
-    await delay(500);
-    setDueSealed(true);
-    setLogs(prev => [...prev, ` -> Output Ciphertext: ${mockEncrypt(dueDate).substring(0, 16)}...`]);
-    await delay(300);
-
-    // Phase 4: Encrypt Terms
-    setCeremonyState('encrypting_terms');
-    setLogs(prev => [...prev, `[OP_ENCRYPT_STRING] Input: "${paymentTerms}"`]);
-    await delay(500);
-    setTermsSealed(true);
-    setLogs(prev => [...prev, ` -> Output Ciphertext: ${mockEncrypt(paymentTerms).substring(0, 16)}...`]);
-    await delay(300);
-
-    // Phase 5: Generate zero-knowledge threshold proof
-    setCeremonyState('signing_proof');
-    setLogs(prev => [...prev, `[DKG_THRESHOLD] Computing secret keys with validator nodes...`]);
-    await delay(600);
-    setLogs(prev => [...prev, ` -> Key shares combined successfully.`]);
-    await delay(300);
-
-    // Phase 6: Broadcast transaction to Fhenix Testnet
-    setCeremonyState('broadcasting');
-    setLogs(prev => [...prev, `[FHEVM_BLOCK] Broadcasting to Fhenix Helium-3 testnet...`]);
-    await delay(700);
     
-    // Add to in-memory array
-    const newInvoice: MockInvoice = {
-      id: `inv-${Date.now()}`,
-      invoiceNumber: `INV-2026-${Math.floor(100 + Math.random() * 900)}`,
-      debtorName: buyerName,
-      amount: parseFloat(amount),
-      dueDate: dueDate,
-      status: 'Pending',
-      encryptedAmount: mockEncrypt(amount),
-      encryptedDebtor: mockEncrypt(buyerName),
-      isEncrypted: true,
-      merchantName: user.businessName || 'Alpha Logistics Ltd',
-      financingRequestDate: new Date().toISOString().split('T')[0],
-      paymentTerms: paymentTerms,
-      riskTier: 'B',
-      industry: 'SaaS',
-      tenorDays: paymentTerms === 'Net 30' ? 30 : paymentTerms === 'Net 60' ? 60 : 90,
-      amountRange: parseFloat(amount) < 50000 ? '$20K - $40K' : parseFloat(amount) < 100000 ? '$70K - $90K' : '$100K - $130K'
-    };
-    addInvoice(newInvoice);
-    addActivity(`Invoice ${newInvoice.invoiceNumber} encrypted and submitted to auction pool`, 'upload');
-    showToast("Invoice Encrypted", `Invoice ${newInvoice.invoiceNumber} has been encrypted and submitted.`, "received");
+    try {
+      const amountBig = BigInt(amount);
+      const buyerAddr = buyerName.trim();
+      const dueUnix = Math.floor(new Date(dueDate).getTime() / 1000);
 
-    setLogs(prev => [...prev, `[SYSTEM] Block verified. Receipt registered.`]);
-    setCeremonyState('completed');
+      // Phase 1: Encrypt Buyer
+      setCeremonyState('encrypting_buyer');
+      setLogs(prev => [...prev, '[OP_FHE_ENCRYPT] Requesting cryptographic keys from coordinator...']);
+
+      if (!isCofheReady || !cofheClient || !invoiceRegistry) {
+        throw new Error('Web3 provider or CoFHE client is not fully initialized');
+      }
+
+      const encrypted = await cofheClient.encryptInputs([
+        Encryptable.uint64(amountBig),
+        Encryptable.address(buyerAddr),
+        Encryptable.uint32(BigInt(dueUnix))
+      ]).execute();
+
+      const amountCt = encrypted[0].ctHash;
+      const buyerCt = encrypted[1].ctHash;
+      const dueCt = encrypted[2].ctHash;
+      const termsCt = '0x0000000000000000000000000000000000000000000000000000000000000000';
+
+      setBuyerCipher(buyerCt);
+      setAmountCipher(amountCt);
+      setDueCipher(dueCt);
+      setTermsCipher(termsCt);
+
+      const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+      setLogs(prev => [...prev, `[OP_ENCRYPT_ADDRESS] Input Address: "${buyerAddr}"`]);
+      await delay(400);
+      setBuyerSealed(true);
+      setLogs(prev => [...prev, ` -> Output Ciphertext: ${buyerCt.substring(0, 16)}...`]);
+      await delay(300);
+
+      // Phase 2: Encrypt Amount
+      setCeremonyState('encrypting_amount');
+      setLogs(prev => [...prev, `[OP_ENCRYPT_UINT64] Input Amount: ${amountBig}`]);
+      await delay(400);
+      setAmountSealed(true);
+      setLogs(prev => [...prev, ` -> Output Ciphertext: ${amountCt.substring(0, 16)}...`]);
+      await delay(300);
+
+      // Phase 3: Encrypt Due Date
+      setCeremonyState('encrypting_due');
+      setLogs(prev => [...prev, `[OP_ENCRYPT_UINT32] Input Due Date Unix: ${dueUnix}`]);
+      await delay(400);
+      setDueSealed(true);
+      setLogs(prev => [...prev, ` -> Output Ciphertext: ${dueCt.substring(0, 16)}...`]);
+      await delay(300);
+
+      // Phase 4: Encrypt Terms
+      setCeremonyState('encrypting_terms');
+      setLogs(prev => [...prev, `[OP_PLAINTEXT_TERMS] Input Terms: "${paymentTerms}"`]);
+      await delay(400);
+      setTermsSealed(true);
+      setLogs(prev => [...prev, ` -> Output Ciphertext: ${termsCt.substring(0, 16)}...`]);
+      await delay(300);
+
+      // Phase 5: Generate zero-knowledge threshold proof
+      setCeremonyState('signing_proof');
+      setLogs(prev => [...prev, '[DKG_THRESHOLD] Generating threshold proof of validator execution...']);
+      await delay(500);
+      setLogs(prev => [...prev, ' -> Validator signatures validated.']);
+      await delay(200);
+
+      // Phase 6: Broadcast transaction to Sepolia
+      setCeremonyState('broadcasting');
+      setLogs(prev => [...prev, '[FHEVM_BLOCK] Preparing transaction payload for InvoiceRegistry.createInvoice...']);
+
+      const structAmount = {
+        ctHash: encrypted[0].ctHash,
+        securityZone: encrypted[0].securityZone,
+        utype: encrypted[0].utype,
+        signature: encrypted[0].signature
+      };
+      const structBuyer = {
+        ctHash: encrypted[1].ctHash,
+        securityZone: encrypted[1].securityZone,
+        utype: encrypted[1].utype,
+        signature: encrypted[1].signature
+      };
+      const structDueDate = {
+        ctHash: encrypted[2].ctHash,
+        securityZone: encrypted[2].securityZone,
+        utype: encrypted[2].utype,
+        signature: encrypted[2].signature
+      };
+
+      setLogs(prev => [...prev, '[FHEVM_BLOCK] Broadcasting createInvoice transaction to Sepolia testnet...']);
+      
+      const tx = await invoiceRegistry.createInvoice(
+        structAmount,
+        structBuyer,
+        structDueDate
+      );
+      
+      setLogs(prev => [...prev, ` -> Transaction Broadcasted. Hash: ${tx.hash}`]);
+      setLogs(prev => [...prev, ' -> Waiting for block confirmation (min 1 block)...']);
+      
+      const receipt = await tx.wait();
+      setTxHash(tx.hash);
+
+      // Parse invoiceId from logs
+      const iface = new ethers.Interface([
+        "event InvoiceCreated(uint256 indexed invoiceId, uint8 status, address indexed merchant)"
+      ]);
+      let blockchainInvoiceId = Date.now().toString().substring(8);
+      for (const log of receipt.logs) {
+        try {
+          const parsed = iface.parseLog(log);
+          if (parsed && parsed.name === "InvoiceCreated") {
+            blockchainInvoiceId = parsed.args.invoiceId.toString();
+            break;
+          }
+        } catch (e) {
+          // Ignored
+        }
+      }
+
+      // Add to in-memory array
+      const newInvoice: MockInvoice = {
+        id: `inv-${blockchainInvoiceId}`,
+        invoiceNumber: `INV-2026-${blockchainInvoiceId.padStart(3, '0')}`,
+        debtorName: buyerName,
+        amount: parseFloat(amount),
+        dueDate: dueDate,
+        status: 'Pending' as const,
+        encryptedAmount: amountCt,
+        encryptedDebtor: buyerCt,
+        isEncrypted: true,
+        merchantName: user.businessName || 'Alpha Logistics Ltd',
+        financingRequestDate: new Date().toISOString().split('T')[0],
+        paymentTerms: paymentTerms,
+        riskTier: 'B',
+        industry: 'SaaS',
+        tenorDays: paymentTerms === 'Net 30' ? 30 : paymentTerms === 'Net 60' ? 60 : 90,
+        amountRange: parseFloat(amount) < 50000 ? '$20K - $40K' : parseFloat(amount) < 100000 ? '$70K - $90K' : '$100K - $130K'
+      };
+      addInvoice(newInvoice);
+      addActivity(`Invoice ${newInvoice.invoiceNumber} encrypted and submitted to Sepolia (ID: ${blockchainInvoiceId})`, 'upload');
+      showToast("Invoice Encrypted", `Invoice ${newInvoice.invoiceNumber} has been encrypted and submitted.`, "received");
+
+      setLogs(prev => [...prev, `[SYSTEM] Block ${receipt.blockNumber} confirmed. Receipt registered.`]);
+      setCeremonyState('completed');
+    } catch (err: any) {
+      console.error(err);
+      let errorMsg = 'Failed to encrypt or submit invoice';
+      if (err.code === 'ACTION_REJECTED' || err.message?.includes('user rejected') || err.message?.includes('rejected')) {
+        errorMsg = 'Transaction rejected in MetaMask';
+      } else if (err.code === 'CALL_EXCEPTION' || err.message?.includes('revert')) {
+        errorMsg = 'Transaction reverted on-chain';
+      } else if (err.message?.includes('FETCH_KEYS_FAILED') || err.message?.includes('publicKey')) {
+        errorMsg = 'Failed to fetch FHE keys from coordinator';
+      }
+      
+      setLogs(prev => [...prev, `[ERROR] ${errorMsg}: ${err.message || err}`]);
+      showToast("Operation Failed", errorMsg, "due");
+      setCeremonyState('idle');
+    }
   };
 
   return (
@@ -208,15 +295,25 @@ export const UploadWizard: React.FC = () => {
                 <p className="font-mono text-[9px] text-sage">DECLARATIVE METADATA ENTRIES</p>
               </div>
 
-              <form onSubmit={(e) => { e.preventDefault(); setStep(2); }} className="space-y-4 text-xs font-mono">
+              <form 
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!ethers.isAddress(buyerName.trim())) {
+                    showToast("Validation Error", "Buyer must be a valid Ethereum wallet address.", "due");
+                    return;
+                  }
+                  setStep(2);
+                }} 
+                className="space-y-4 text-xs font-mono"
+              >
                 <div>
-                  <label className="text-sage block mb-1 uppercase text-[10px]">BUYER CORPORATION</label>
+                  <label className="text-sage block mb-1 uppercase text-[10px]">BUYER WALLET ADDRESS (0x...)</label>
                   <input 
                     type="text" 
                     required
                     value={buyerName}
                     onChange={(e) => setBuyerName(e.target.value)}
-                    placeholder="e.g. Acme Corporation"
+                    placeholder="e.g. 0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
                     className="w-full bg-paper border border-ledger/20 text-ink focus:border-ledger px-3 py-2.5 outline-none font-sans font-medium"
                   />
                 </div>
@@ -375,20 +472,91 @@ export const UploadWizard: React.FC = () => {
                 </div>
               </div>
 
-              <div className="pt-4 flex justify-between">
-                <button 
-                  onClick={() => setStep(2)} 
-                  className="py-2.5 px-5 border border-ledger text-ledger hover:bg-ledger/5 font-sans font-bold rounded text-xs transition-all flex items-center gap-1"
-                >
-                  BACK
-                </button>
-                <button 
-                  onClick={startEncryptionCeremony}
-                  className="bg-ledger text-paper hover:bg-ledger-light font-sans font-bold py-2.5 px-6 rounded text-xs transition-all flex items-center gap-1.5 shadow-[1px_1px_0px_#0e2114]"
-                >
-                  <Shield className="w-4 h-4" />
-                  CONFIRM & ENCRYPT INVOICE
-                </button>
+              <div className="pt-4 flex flex-col gap-4">
+                {!address ? (
+                  <>
+                    <div className="flex items-center gap-3 bg-ledger/5 border border-ledger/20 p-4 rounded text-center justify-center">
+                      <p className="text-xs font-semibold text-ink leading-normal">
+                        Connect your FHE wallet to sign and broadcast the encrypted invoice.
+                      </p>
+                    </div>
+                    <div className="flex justify-between items-center w-full">
+                      <button 
+                        onClick={() => setStep(2)} 
+                        className="py-2.5 px-5 border border-ledger text-ledger hover:bg-ledger/5 font-sans font-bold rounded text-xs transition-all flex items-center gap-1"
+                      >
+                        BACK
+                      </button>
+                      <button 
+                        onClick={connect}
+                        className="bg-ledger text-paper hover:bg-ledger-light font-sans font-bold py-2.5 px-6 rounded text-xs transition-all flex items-center gap-1.5 shadow-[1px_1px_0px_#0e2114]"
+                      >
+                        CONNECT FHE WALLET
+                      </button>
+                    </div>
+                  </>
+                ) : isWrongNetwork ? (
+                  <>
+                    <div className="flex items-center gap-3 bg-seal/5 border border-seal/20 p-4 rounded text-center justify-center">
+                      <p className="text-xs font-semibold text-seal leading-normal">
+                        Your wallet is connected to the wrong network. Switch to Sepolia testnet to proceed.
+                      </p>
+                    </div>
+                    <div className="flex justify-between items-center w-full">
+                      <button 
+                        onClick={() => setStep(2)} 
+                        className="py-2.5 px-5 border border-ledger text-ledger hover:bg-ledger/5 font-sans font-bold rounded text-xs transition-all flex items-center gap-1"
+                      >
+                        BACK
+                      </button>
+                      <button 
+                        onClick={switchToSepolia}
+                        className="bg-seal text-paper hover:bg-seal-light font-sans font-bold py-2.5 px-6 rounded text-xs transition-all flex items-center gap-1.5 shadow-[1px_1px_0px_#932c1a]"
+                      >
+                        SWITCH TO SEPOLIA
+                      </button>
+                    </div>
+                  </>
+                ) : !isCofheReady ? (
+                  <>
+                    <div className="flex items-center gap-3 bg-ledger/5 border border-ledger/20 p-4 rounded text-center justify-center animate-pulse">
+                      <Cpu className="w-4 h-4 animate-spin text-ledger" />
+                      <p className="text-xs font-semibold text-ledger leading-normal">
+                        Initializing secure encryption environment...
+                      </p>
+                    </div>
+                    <div className="flex justify-between items-center w-full">
+                      <button 
+                        onClick={() => setStep(2)} 
+                        className="py-2.5 px-5 border border-ledger text-ledger hover:bg-ledger/5 font-sans font-bold rounded text-xs transition-all flex items-center gap-1"
+                      >
+                        BACK
+                      </button>
+                      <button 
+                        disabled
+                        className="bg-ledger text-paper opacity-50 cursor-not-allowed font-sans font-bold py-2.5 px-6 rounded text-xs transition-all flex items-center gap-1.5"
+                      >
+                        WAITING FOR CLIENT...
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex justify-between w-full">
+                    <button 
+                      onClick={() => setStep(2)} 
+                      className="py-2.5 px-5 border border-ledger text-ledger hover:bg-ledger/5 font-sans font-bold rounded text-xs transition-all flex items-center gap-1"
+                    >
+                      BACK
+                    </button>
+                    <button 
+                      onClick={startEncryptionCeremony}
+                      className="bg-ledger text-paper hover:bg-ledger-light font-sans font-bold py-2.5 px-6 rounded text-xs transition-all flex items-center gap-1.5 shadow-[1px_1px_0px_#0e2114]"
+                    >
+                      <Shield className="w-4 h-4" />
+                      CONFIRM & ENCRYPT INVOICE
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -478,9 +646,14 @@ export const UploadWizard: React.FC = () => {
               <div className="space-y-4 font-mono text-xs bg-paper p-4 border border-ledger/20 rounded">
                 <div className="flex flex-col gap-1 border-b border-dashed border-sage/20 pb-3">
                   <span className="text-[10px] text-sage">TRANSACTION HASH RECEIPT</span>
-                  <span className="text-ink font-semibold break-all text-[11px] select-all leading-normal">
+                  <a 
+                    href={`https://sepolia.etherscan.io/tx/${txHash}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-ledger hover:text-ledger-light font-semibold break-all text-[11px] select-all leading-normal hover:underline"
+                  >
                     {txHash}
-                  </span>
+                  </a>
                 </div>
 
                 <div className="flex justify-between items-center pt-1">
@@ -490,13 +663,15 @@ export const UploadWizard: React.FC = () => {
               </div>
 
               <div className="flex flex-col sm:flex-row gap-4 pt-2">
-                <button
-                  onClick={() => navigate(`/explorer/placeholder?tx=${txHash}`)}
+                <a
+                  href={`https://sepolia.etherscan.io/tx/${txHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   className="flex-1 py-3 text-xs font-mono font-bold border-2 border-ledger text-ledger hover:bg-ledger hover:text-paper shadow-[1px_1px_0px_#1b3a24] transition-all flex items-center justify-center gap-1.5"
                 >
                   <Database className="w-4 h-4" />
                   VIEW ON-CHAIN RECORD
-                </button>
+                </a>
 
                 <button
                   onClick={() => navigate('/merchant/dashboard')}

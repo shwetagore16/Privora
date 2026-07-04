@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@cofhe/sdk": "^0.4.0",
+    "@cofhe/sdk": "^0.6.0",
     "clsx": "^2.1.1",
     "ethers": "^6.17.0",
     "lucide-react": "^1.23.0",

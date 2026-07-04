@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { getInvoices, getOffers, getYieldHistory, settleInvoiceInMock } from '../../lib/mock-data';
 import RedactionBar from '../../components/RedactionBar';
-import { Lock, Unlock, LogOut, Eye, EyeOff, TrendingUp, ShoppingBag, Download } from 'lucide-react';
+import { Lock, Unlock, LogOut, Eye, EyeOff, TrendingUp, ShoppingBag, Download, Cpu } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import { useWeb3 } from '../../lib/web3/useWeb3';
@@ -13,8 +13,13 @@ export const LenderDashboard: React.FC = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   
-  const invoices = getInvoices();
-  const offers = getOffers();
+  const [invoicesList, setInvoicesList] = useState<any[]>([]);
+  const [offersList, setOffersList] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  const invoices = invoicesList;
+  const offers = offersList;
   const yieldHistory = getYieldHistory();
 
   const [authorizedMap, setAuthorizedMap] = useState<Record<string, boolean>>({});
@@ -38,6 +43,139 @@ export const LenderDashboard: React.FC = () => {
     };
     fetchBalance();
   }, [provider, account]);
+
+  const fetchOnChainData = useCallback(async () => {
+    if (!account) {
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
+    setFetchError(null);
+    try {
+      const invoiceRegistry = await getContract('InvoiceRegistry');
+      const offerMarket = await getContract('OfferMarket');
+      if (!invoiceRegistry || !offerMarket) {
+        setIsLoading(false);
+        return;
+      }
+
+      let fromBlock = 11195000;
+      if (provider) {
+        try {
+          const latestBlock = await provider.getBlockNumber();
+          fromBlock = Math.max(11195000, Number(latestBlock) - 50000);
+        } catch (blockErr) {
+          console.warn("Failed to retrieve latest block number, falling back to deployment block:", blockErr);
+        }
+      }
+
+      // Query all created invoices
+      const filter = invoiceRegistry.filters.InvoiceCreated();
+      const events = await invoiceRegistry.queryFilter(filter, fromBlock);
+
+      const fetchedInvoices = [];
+      const fetchedOffers = [];
+
+      // Get local mock data for mapping/enriching
+      const currentMockInvoices = getInvoices();
+      const currentMockOffers = getOffers();
+
+      for (const event of events) {
+        if ('args' in event && event.args) {
+          const invoiceId = event.args.invoiceId;
+          if (Number(invoiceId) <= 13) continue;
+          const metadata = await invoiceRegistry.getInvoiceMetadata(invoiceId);
+          const encryptedData = await invoiceRegistry.getEncryptedInvoiceData(invoiceId);
+
+          const statusNum = Number(metadata.status);
+          let statusStr = 'Pending';
+          
+          if (statusNum === 0 || statusNum === 1) {
+            statusStr = 'Pending';
+          } else if (statusNum === 2) {
+            statusStr = 'Approved';
+          } else if (statusNum === 3) {
+            statusStr = 'Financed';
+          } else if (statusNum === 4 || statusNum === 5) {
+            statusStr = 'Settled';
+          }
+
+          const listedDate = Number(metadata.listedAt) > 0 
+            ? new Date(Number(metadata.listedAt) * 1000).toISOString().split('T')[0]
+            : new Date().toISOString().split('T')[0];
+
+          const invoiceIdStr = `inv-${invoiceId.toString()}`;
+          const matchingMockInv = currentMockInvoices.find(inv => inv.id === invoiceIdStr);
+
+          // Get offers for this invoice
+          const rawOffers = await offerMarket.getOffersForInvoice(invoiceId);
+          
+          for (const rawOff of rawOffers) {
+            const rawOffId = Number(rawOff.offerId);
+            const statusEnum = await offerMarket.getOfferStatus(rawOffId);
+            
+            let statusStrOffer: 'Pending' | 'Accepted' | 'Declined' = 'Pending';
+            if (statusEnum === 1) {
+              statusStrOffer = 'Accepted';
+            } else if (statusEnum === 2) {
+              statusStrOffer = 'Declined';
+            }
+
+            const matchingMockOffer = currentMockOffers.find(o => 
+              o.invoiceId === invoiceIdStr && 
+              o.lenderAddress?.toLowerCase() === rawOff.lender.toLowerCase()
+            );
+
+            // Construct/enrich mock offer structure
+            fetchedOffers.push({
+              id: matchingMockOffer ? matchingMockOffer.id : `off-${rawOffId}`,
+              invoiceId: invoiceIdStr,
+              invoiceNumber: `INV-2026-${invoiceId.toString().padStart(3, '0')}`,
+              lenderName: matchingMockOffer ? matchingMockOffer.lenderName : 'Horizon Capital Partners',
+              lenderAddress: rawOff.lender,
+              requestedAmount: matchingMockInv ? matchingMockInv.amount : 75000,
+              offeredAmount: matchingMockOffer ? matchingMockOffer.offeredAmount : 73650,
+              discountRate: matchingMockOffer ? matchingMockOffer.discountRate : 1.80,
+              repaymentTermDays: matchingMockOffer ? matchingMockOffer.repaymentTermDays : 60,
+              status: statusStrOffer,
+              createdAt: matchingMockOffer ? matchingMockOffer.createdAt : new Date().toISOString().split('T')[0]
+            });
+          }
+
+          // Build invoice structure
+          fetchedInvoices.push({
+            id: invoiceIdStr,
+            invoiceNumber: `INV-2026-${invoiceId.toString().padStart(3, '0')}`,
+            debtorName: matchingMockInv ? matchingMockInv.debtorName : 'REDACTED',
+            amount: matchingMockInv ? matchingMockInv.amount : 75000,
+            dueDate: matchingMockInv ? matchingMockInv.dueDate : listedDate,
+            status: statusStr as any,
+            encryptedAmount: encryptedData.amount || '0x0000000000000000000000000000000000000000000000000000000000000000',
+            encryptedDebtor: encryptedData.buyer || '0x0000000000000000000000000000000000000000000000000000000000000000',
+            isEncrypted: true,
+            merchantName: matchingMockInv ? matchingMockInv.merchantName : 'Merchant (0x' + metadata.merchant.substring(2, 6) + ')',
+            riskTier: matchingMockInv ? matchingMockInv.riskTier : 'B' as const,
+            industry: matchingMockInv ? matchingMockInv.industry : 'SaaS' as const,
+            tenorDays: matchingMockInv ? matchingMockInv.tenorDays : 60,
+            amountRange: matchingMockInv ? matchingMockInv.amountRange : '$70K - $90K'
+          });
+        }
+      }
+
+      setInvoicesList(fetchedInvoices.reverse());
+      setOffersList(fetchedOffers);
+    } catch (err: any) {
+      console.error('Failed to fetch on-chain lender data:', err);
+      setFetchError(err.message || 'Failed to retrieve ledger data from Sepolia.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [account, getContract, provider]);
+
+  useEffect(() => {
+    fetchOnChainData();
+  }, [account, fetchOnChainData]);
 
   const handleSettleInvoice = async (invoiceId: string) => {
     try {
@@ -255,7 +393,19 @@ export const LenderDashboard: React.FC = () => {
               </div>
 
               <div className="overflow-x-auto">
-                {fundedInvoices.length === 0 ? (
+                {!account ? (
+                  <p className="text-xs text-sage font-mono">Please connect your MetaMask wallet above to view your portfolio.</p>
+                ) : isLoading ? (
+                  <div className="py-6 flex flex-col items-center justify-center gap-2 text-xs font-mono text-ledger animate-pulse">
+                    <Cpu className="w-5 h-5 animate-spin text-ledger" />
+                    <span>Fetching active positions...</span>
+                  </div>
+                ) : fetchError ? (
+                  <div className="py-6 text-center text-xs font-mono text-seal">
+                    <p>{fetchError}</p>
+                    <button onClick={fetchOnChainData} className="mt-2 text-xs font-mono text-ledger underline hover:text-ledger-light">Retry</button>
+                  </div>
+                ) : fundedInvoices.length === 0 ? (
                   <p className="text-xs text-sage font-mono">No active portfolio positions yet. Bids must be accepted by merchants first.</p>
                 ) : (
                   <table className="w-full text-left font-mono text-xs border-collapse">
@@ -276,7 +426,7 @@ export const LenderDashboard: React.FC = () => {
 
                         return (
                           <tr key={inv.id} className="hover:bg-paper/50 transition-colors">
-                            <td className="py-4 font-semibold text-ink">{inv.invoiceNumber}</td>
+                            <td className="py-4 font-semibold text-ink">{inv.invoiceNumber} <span className="text-[10px] text-sage font-normal">(On-chain ID: {inv.id.replace('inv-', '')})</span></td>
                             <td className="py-4">
                               <div className="flex items-center gap-1.5">
                                 <RedactionBar 
@@ -333,7 +483,19 @@ export const LenderDashboard: React.FC = () => {
               </div>
 
               <div className="overflow-x-auto">
-                {myOffers.length === 0 ? (
+                {!account ? (
+                  <p className="text-xs text-sage font-mono">Please connect your MetaMask wallet above to view your bids.</p>
+                ) : isLoading ? (
+                  <div className="py-6 flex flex-col items-center justify-center gap-2 text-xs font-mono text-ledger animate-pulse">
+                    <Cpu className="w-5 h-5 animate-spin text-ledger" />
+                    <span>Fetching submitted bids...</span>
+                  </div>
+                ) : fetchError ? (
+                  <div className="py-6 text-center text-xs font-mono text-seal">
+                    <p>{fetchError}</p>
+                    <button onClick={fetchOnChainData} className="mt-2 text-xs font-mono text-ledger underline hover:text-ledger-light">Retry</button>
+                  </div>
+                ) : myOffers.length === 0 ? (
                   <p className="text-xs text-sage font-mono">You have not submitted any bids yet. Visit the Marketplace to place bids.</p>
                 ) : (
                   <table className="w-full text-left font-mono text-xs border-collapse">
@@ -349,7 +511,7 @@ export const LenderDashboard: React.FC = () => {
                     <tbody className="divide-y divide-sage/20">
                       {myOffers.map((off) => {
                         const associatedInvoice = invoices.find(i => i.id === off.invoiceId);
-                        let displayStatus = off.status;
+                        let displayStatus: string = off.status;
                         let stampClass = 'stamp-pending';
 
                         if (off.status === 'Accepted') {
@@ -378,7 +540,7 @@ export const LenderDashboard: React.FC = () => {
 
                         return (
                           <tr key={off.id} className="hover:bg-paper/50 transition-colors">
-                            <td className="py-4 font-semibold text-ink">{off.invoiceNumber}</td>
+                            <td className="py-4 font-semibold text-ink">{off.invoiceNumber} <span className="text-[10px] text-sage font-normal">(On-chain ID: {off.invoiceId.replace('inv-', '')})</span></td>
                             <td className="py-4 text-right font-semibold">${off.offeredAmount.toLocaleString()}.00</td>
                             <td className="py-4 text-center text-ledger font-semibold">{off.discountRate.toFixed(2)}%</td>
                             <td className="py-4 text-center">{off.repaymentTermDays} Days</td>

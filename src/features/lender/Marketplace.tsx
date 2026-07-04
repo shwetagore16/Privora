@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { getInvoices, addOffer, type MockInvoice, type MockLenderOffer } from '../../lib/mock-data';
@@ -13,17 +13,108 @@ export const Marketplace: React.FC = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const { showToast } = useToast();
-  const { account, connectWallet, getContract, cofheClient } = useWeb3();
+  const { account, connectWallet, getContract, cofheClient, provider } = useWeb3();
   
   // States for filter
   const [selectedRisk, setSelectedRisk] = useState<string>('All');
   const [selectedTenor, setSelectedTenor] = useState<string>('All');
   const [selectedIndustry, setSelectedIndustry] = useState<string>('All');
 
-  // Invoices from data pool (only list Approved / Pending ones for bids)
-  const [invoicesList] = useState<MockInvoice[]>(() => {
-    return getInvoices().filter(inv => inv.status === 'Approved' || inv.status === 'Pending');
-  });
+  const [invoicesList, setInvoicesList] = useState<MockInvoice[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  const fetchOnChainInvoices = useCallback(async () => {
+    if (!account) {
+      setIsLoading(false);
+      return;
+    }
+    setIsLoading(true);
+    setFetchError(null);
+    try {
+      const invoiceRegistry = await getContract('InvoiceRegistry');
+      if (!invoiceRegistry) {
+        setIsLoading(false);
+        return;
+      }
+
+      let fromBlock = 11195000;
+      if (provider) {
+        try {
+          const latestBlock = await provider.getBlockNumber();
+          fromBlock = Math.max(11195000, Number(latestBlock) - 50000);
+        } catch (blockErr) {
+          console.warn("Failed to retrieve latest block number, falling back to deployment block:", blockErr);
+        }
+      }
+
+      // Query all created invoices
+      const filter = invoiceRegistry.filters.InvoiceCreated();
+      const events = await invoiceRegistry.queryFilter(filter, fromBlock);
+
+      const fetchedInvoices = [];
+      const currentMockInvoices = getInvoices();
+
+      for (const event of events) {
+        if ('args' in event && event.args) {
+          const invoiceId = event.args.invoiceId;
+          if (Number(invoiceId) <= 13) continue;
+          const metadata = await invoiceRegistry.getInvoiceMetadata(invoiceId);
+          const encryptedData = await invoiceRegistry.getEncryptedInvoiceData(invoiceId);
+
+          const statusNum = Number(metadata.status);
+          let statusStr = 'Pending';
+          
+          if (statusNum === 0 || statusNum === 1) {
+            statusStr = 'Pending';
+          } else if (statusNum === 2) {
+            statusStr = 'Approved';
+          } else if (statusNum === 3) {
+            statusStr = 'Financed';
+          } else if (statusNum === 4 || statusNum === 5) {
+            statusStr = 'Settled';
+          }
+
+          if (statusStr === 'Pending' || statusStr === 'Approved') {
+            const listedDate = Number(metadata.listedAt) > 0 
+              ? new Date(Number(metadata.listedAt) * 1000).toISOString().split('T')[0]
+              : new Date().toISOString().split('T')[0];
+
+            const invoiceIdStr = `inv-${invoiceId.toString()}`;
+            const matchingMock = currentMockInvoices.find(inv => inv.id === invoiceIdStr);
+            
+            fetchedInvoices.push({
+              id: invoiceIdStr,
+              invoiceNumber: `INV-2026-${invoiceId.toString().padStart(3, '0')}`,
+              debtorName: matchingMock ? matchingMock.debtorName : 'REDACTED (0x4b7f...)',
+              amount: matchingMock ? matchingMock.amount : 75000,
+              dueDate: matchingMock ? matchingMock.dueDate : listedDate,
+              status: statusStr as any,
+              encryptedAmount: encryptedData.amount || '0x0000000000000000000000000000000000000000000000000000000000000000',
+              encryptedDebtor: encryptedData.buyer || '0x0000000000000000000000000000000000000000000000000000000000000000',
+              isEncrypted: true,
+              merchantName: matchingMock ? matchingMock.merchantName : 'Merchant (0x' + metadata.merchant.substring(2, 6) + ')',
+              riskTier: matchingMock ? matchingMock.riskTier : 'B' as const,
+              industry: matchingMock ? matchingMock.industry : 'SaaS' as const,
+              tenorDays: matchingMock ? matchingMock.tenorDays : 60,
+              amountRange: matchingMock ? matchingMock.amountRange : '$70K - $90K'
+            });
+          }
+        }
+      }
+
+      setInvoicesList(fetchedInvoices.reverse());
+    } catch (err: any) {
+      console.error('Failed to fetch on-chain invoices:', err);
+      setFetchError(err.message || 'Failed to retrieve invoice records from Sepolia.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [account, getContract, provider]);
+
+  useEffect(() => {
+    fetchOnChainInvoices();
+  }, [account, fetchOnChainInvoices]);
 
   // Modal submission state
   const [selectedInvoice, setSelectedInvoice] = useState<MockInvoice | null>(null);
@@ -277,7 +368,38 @@ export const Marketplace: React.FC = () => {
         </div>
 
         {/* Opportunity Card Grid */}
-        {filteredInvoices.length === 0 ? (
+        {!account ? (
+          <div className="py-12 flex flex-col items-center justify-center gap-4 text-center bg-paper-light rounded border-2 border-dashed border-ledger/20">
+            <p className="text-xs font-mono text-sage max-w-md">
+              Connect your FHE wallet to view the receivables marketplace and submit bids.
+            </p>
+            <button 
+              onClick={connectWallet}
+              className="bg-ledger text-paper hover:bg-ledger-light font-sans font-bold py-2.5 px-6 rounded text-xs transition-all shadow-[1px_1px_0px_#0e2114]"
+            >
+              CONNECT FHE WALLET
+            </button>
+          </div>
+        ) : isLoading ? (
+          <div className="py-12 flex flex-col items-center justify-center gap-4 text-center animate-pulse">
+            <Cpu className="w-8 h-8 animate-spin text-ledger" />
+            <p className="text-xs font-mono text-ledger">
+              Fetching real receivables from Fhenix smart contracts...
+            </p>
+          </div>
+        ) : fetchError ? (
+          <div className="py-12 flex flex-col items-center justify-center gap-4 text-center bg-paper/50 rounded border-2 border-dashed border-seal/20">
+            <p className="text-xs font-mono text-seal max-w-md">
+              {fetchError}
+            </p>
+            <button 
+              onClick={fetchOnChainInvoices}
+              className="bg-ledger text-paper hover:bg-ledger-light font-sans font-bold py-2.5 px-6 rounded text-xs transition-all shadow-[1px_1px_0px_#0e2114]"
+            >
+              RETRY FETCH
+            </button>
+          </div>
+        ) : filteredInvoices.length === 0 ? (
           <div className="bg-paper-light border border-dashed border-sage/40 rounded p-12 text-center text-sage font-mono text-xs">
             No matching receivables auctions found on Fhenix testnet.
           </div>
@@ -302,7 +424,7 @@ export const Marketplace: React.FC = () => {
                 <div className="space-y-4">
                   <div>
                     <span className="font-mono text-[9px] text-sage block uppercase">{inv.industry} CATEGORY</span>
-                    <h3 className="font-display font-semibold text-lg text-ink mt-0.5">{inv.invoiceNumber}</h3>
+                    <h3 className="font-display font-semibold text-lg text-ink mt-0.5">{inv.invoiceNumber} <span className="text-xs text-sage font-mono font-normal">(On-chain ID: {inv.id.replace('inv-', '')})</span></h3>
                   </div>
 
                   <div className="border-t border-b border-ledger/10 py-3 my-2 space-y-2">

@@ -1,8 +1,7 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { ethers } from 'ethers';
-import { createPublicClient, createWalletClient, custom } from 'viem';
-import { sepolia as viemSepolia } from 'viem/chains';
 import { createCofheClient, createCofheConfig } from '@cofhe/sdk/web';
+import { Ethers6Adapter } from '@cofhe/sdk/adapters';
 import { sepolia as cofheSepolia } from '@cofhe/sdk/chains';
 import {
   INVOICE_REGISTRY_ADDRESS,
@@ -50,16 +49,19 @@ export const Web3Provider: React.FC<{ children: React.ReactNode }> = ({ children
   const [offerMarket, setOfferMarket] = useState<ethers.Contract | null>(null);
   const [escrow, setEscrow] = useState<ethers.Contract | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const cofheClientRef = useRef<any>(null);
 
   // Initialize CoFHE Client once
   useEffect(() => {
     try {
       const config = createCofheConfig({
         environment: 'web',
+        useWorkers: false,
         supportedChains: [cofheSepolia]
       });
       const client = createCofheClient(config);
       setCofheClient(client);
+      cofheClientRef.current = client;
     } catch (err: any) {
       console.error('Failed to initialize CoFHE client:', err);
       setError(err.message || 'Failed to initialize CoFHE client');
@@ -112,23 +114,32 @@ export const Web3Provider: React.FC<{ children: React.ReactNode }> = ({ children
         // 4. Initialize contracts
         initContracts(ethersSigner);
 
-        // 5. Connect CoFHE web client
-        if (cofheClient) {
-          const viemPublic = createPublicClient({
-            chain: viemSepolia,
-            transport: custom(window.ethereum)
-          });
-          const viemWallet = createWalletClient({
-            chain: viemSepolia,
-            transport: custom(window.ethereum),
-            account: walletAddress as `0x${string}`
-          });
-          await cofheClient.connect(viemPublic, viemWallet);
+        // 5. Connect CoFHE web client using Ethers6Adapter (proven working approach)
+        const client = cofheClientRef.current;
+        if (client) {
+          try {
+            const { publicClient, walletClient } = await Ethers6Adapter(ethersProvider, ethersSigner);
+            await client.connect(publicClient, walletClient);
 
-          // Generate/Get permit for decryption
-          await cofheClient.permits.createSelf({
-            issuer: walletAddress
-          });
+            // Generate/Get permit for decryption
+            try {
+              await client.permits.createSelf({
+                issuer: walletAddress
+              });
+            } catch (permitErr) {
+              console.warn("Failed to create permit automatically:", permitErr);
+            }
+
+            setIsCofheReady(true);
+          } catch (cofheErr: any) {
+            console.error('CoFHE connection failed:', cofheErr);
+            // Still allow usage without CoFHE (contracts are initialized)
+            setIsCofheReady(true);
+            console.warn('Proceeding with CoFHE in degraded mode');
+          }
+        } else {
+          // cofheClient not yet initialized, still allow contract usage
+          console.warn('CoFHE client not initialized yet, contracts ready');
           setIsCofheReady(true);
         }
       }
@@ -186,6 +197,26 @@ export const Web3Provider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
   };
+
+  // Auto-connect if wallet was previously connected
+  useEffect(() => {
+    const autoConnect = async () => {
+      if (window.ethereum && cofheClientRef.current && !address) {
+        try {
+          const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+          if (accounts.length > 0) {
+            await connect();
+          }
+        } catch (err) {
+          // Silent fail on auto-connect
+          console.warn('Auto-connect failed:', err);
+        }
+      }
+    };
+    // Small delay to ensure cofheClient is ready
+    const timer = setTimeout(autoConnect, 500);
+    return () => clearTimeout(timer);
+  }, [cofheClient]);
 
   // Listen to accounts and network changes
   useEffect(() => {

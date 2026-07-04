@@ -10,20 +10,25 @@ async function startIndexer() {
   console.log(`[Indexer] Starting event indexer for OfferMarket at ${contractAddress}...`);
 
   try {
-    // 1. Sync historical events first
     const currentBlock = await provider.getBlockNumber();
-    const fromBlock = Math.max(0, currentBlock - 5000); // Sync last 5,000 blocks (~16 hours of events)
+    const fromBlock = Math.max(0, currentBlock - 500); // Scan last 500 blocks for recent updates
     console.log(`[Indexer] Syncing historical events from block ${fromBlock} to ${currentBlock}...`);
 
     const submittedFilter = contract.filters.OfferSubmitted();
     const acceptedFilter = contract.filters.OfferAccepted();
 
-    // Query historical OfferSubmitted logs
-    const submittedLogs = await contract.queryFilter(submittedFilter, fromBlock, 'latest');
-    let subCount = 0;
-    for (const log of submittedLogs) {
-      if (!log.args) continue;
-      const { offerId, invoiceId, lender } = log.args;
+    // Query historical logs safely
+    let submittedLogs = [];
+    let acceptedLogs = [];
+    try {
+      submittedLogs = await contract.queryFilter(submittedFilter, fromBlock, 'latest');
+      acceptedLogs = await contract.queryFilter(acceptedFilter, fromBlock, 'latest');
+    } catch (queryErr) {
+      console.warn(`[Indexer] Initial historical log query failed. Proceeding with block polling. Error:`, queryErr.message);
+    }
+
+    // Helper to index OfferSubmitted
+    const indexSubmission = async (offerId, invoiceId, lender, log) => {
       try {
         await OfferEvent.create({
           invoiceId: Number(invoiceId),
@@ -35,22 +40,18 @@ async function startIndexer() {
           blockNumber: log.blockNumber,
           createdAt: new Date()
         });
-        subCount++;
+        console.log(`[Indexer] Indexed Offer #${offerId} (Submitted)`);
       } catch (e) {
-        // Ignore duplicate key error (already synced)
+        if (e.code !== 11000) console.error('[Indexer] Error indexing Submission:', e);
       }
-    }
+    };
 
-    // Query historical OfferAccepted logs
-    const acceptedLogs = await contract.queryFilter(acceptedFilter, fromBlock, 'latest');
-    let accCount = 0;
-    for (const log of acceptedLogs) {
-      if (!log.args) continue;
-      const { offerId, invoiceId } = log.args;
+    // Helper to index OfferAccepted
+    const indexAcceptance = async (offerId, invoiceId, log) => {
       try {
         const originalSubmit = await OfferEvent.findOne({ offerId: Number(offerId), eventType: 'Submitted' });
         const lender = originalSubmit ? originalSubmit.lenderAddress : '0x0000000000000000000000000000000000000000';
-        
+
         await OfferEvent.create({
           invoiceId: Number(invoiceId),
           offerId: Number(offerId),
@@ -62,7 +63,7 @@ async function startIndexer() {
           createdAt: new Date()
         });
 
-        // Create rejections for other offers of this invoice
+        // Mark other offers as Rejected
         const otherOffers = await OfferEvent.find({
           invoiceId: Number(invoiceId),
           offerId: { $ne: Number(offerId) },
@@ -83,79 +84,54 @@ async function startIndexer() {
             });
           } catch (err) {}
         }
-        accCount++;
+        console.log(`[Indexer] Indexed Offer #${offerId} (Accepted, others rejected)`);
       } catch (e) {
-        // Ignore duplicates
+        if (e.code !== 11000) console.error('[Indexer] Error indexing Acceptance:', e);
       }
+    };
+
+    // Index historical items
+    for (const log of submittedLogs) {
+      if (log.args) indexSubmission(log.args.offerId, log.args.invoiceId, log.args.lender, log);
+    }
+    for (const log of acceptedLogs) {
+      if (log.args) indexAcceptance(log.args.offerId, log.args.invoiceId, log);
     }
 
-    console.log(`[Indexer] Historical sync completed: indexed ${subCount} submissions and ${accCount} acceptances.`);
+    console.log(`[Indexer] Historical sync completed.`);
 
-    // 2. Setup real-time event listeners
-    contract.on('OfferSubmitted', async (offerId, invoiceId, lender, event) => {
+    // Polling parameters
+    let lastPolledBlock = currentBlock;
+    console.log(`[Indexer] Starting log polling loop from block ${lastPolledBlock}...`);
+
+    // Poll for new events every 15 seconds
+    setInterval(async () => {
       try {
-        console.log(`[Indexer] OfferSubmitted event: Offer #${offerId} on Invoice #${invoiceId} from ${lender}`);
-        await OfferEvent.create({
-          invoiceId: Number(invoiceId),
-          offerId: Number(offerId),
-          lenderAddress: lender,
-          eventType: 'Submitted',
-          status: 'Pending',
-          txHash: event.log.transactionHash,
-          blockNumber: event.log.blockNumber
-        });
-      } catch (err) {
-        if (err.code !== 11000) {
-          console.error('[Indexer] Error indexing OfferSubmitted:', err);
+        const latestBlock = await provider.getBlockNumber();
+        const safeLatestBlock = latestBlock - 2; // 2-block safety margin for node sync lag
+        if (safeLatestBlock <= lastPolledBlock) return;
+
+        const from = lastPolledBlock + 1;
+        const to = safeLatestBlock;
+
+        const newSubmissions = await contract.queryFilter(submittedFilter, from, to);
+        for (const log of newSubmissions) {
+          if (log.args) await indexSubmission(log.args.offerId, log.args.invoiceId, log.args.lender, log);
         }
+
+        const newAcceptances = await contract.queryFilter(acceptedFilter, from, to);
+        for (const log of newAcceptances) {
+          if (log.args) await indexAcceptance(log.args.offerId, log.args.invoiceId, log);
+        }
+
+        lastPolledBlock = to;
+      } catch (pollErr) {
+        console.warn(`[Indexer] Event polling cycle failed:`, pollErr.message);
       }
-    });
-
-    contract.on('OfferAccepted', async (offerId, invoiceId, event) => {
-      try {
-        console.log(`[Indexer] OfferAccepted event: Offer #${offerId} on Invoice #${invoiceId}`);
-        const originalSubmit = await OfferEvent.findOne({ offerId: Number(offerId), eventType: 'Submitted' });
-        const lender = originalSubmit ? originalSubmit.lenderAddress : '0x0000000000000000000000000000000000000000';
-
-        await OfferEvent.create({
-          invoiceId: Number(invoiceId),
-          offerId: Number(offerId),
-          lenderAddress: lender,
-          eventType: 'Accepted',
-          status: 'Accepted',
-          txHash: event.log.transactionHash,
-          blockNumber: event.log.blockNumber
-        });
-
-        // Mark other offers as Rejected
-        const otherOffers = await OfferEvent.find({
-          invoiceId: Number(invoiceId),
-          offerId: { $ne: Number(offerId) },
-          eventType: 'Submitted'
-        });
-
-        for (const off of otherOffers) {
-          try {
-            await OfferEvent.create({
-              invoiceId: Number(invoiceId),
-              offerId: off.offerId,
-              lenderAddress: off.lenderAddress,
-              eventType: 'Rejected',
-              status: 'Rejected',
-              txHash: event.log.transactionHash,
-              blockNumber: event.log.blockNumber
-            });
-          } catch (err) {}
-        }
-      } catch (err) {
-        if (err.code !== 11000) {
-          console.error('[Indexer] Error indexing OfferAccepted:', err);
-        }
-      }
-    });
+    }, 15000);
 
   } catch (err) {
-    console.error('[Indexer] Failed to initialize indexer. Continuous syncing disabled:', err);
+    console.error('[Indexer] Failed to initialize indexer:', err);
   }
 }
 

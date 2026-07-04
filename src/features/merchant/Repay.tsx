@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getInvoices, repayInvoice, getMerchantBalance, addActivity } from '../../lib/mock-data';
+import { getInvoices, repayInvoice, addActivity } from '../../lib/mock-data';
 import { useToast } from '../../components/Toast';
 import RedactionBar from '../../components/RedactionBar';
 import { ArrowLeft, Lock, Unlock, Eye, EyeOff, RefreshCw, Shield, CheckCircle } from 'lucide-react';

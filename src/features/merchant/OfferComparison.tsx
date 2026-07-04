@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { getInvoices, getOffers, addActivity, type MockLenderOffer, saveData } from '../../lib/mock-data';
-import { ArrowLeft, Check, Building, ShieldCheck, Cpu, Lock, Unlock, Clock, SlidersHorizontal } from 'lucide-react';
+import { ArrowLeft, Check, Building, ShieldCheck, Cpu, Lock, Clock } from 'lucide-react';
 import { useToast } from '../../components/Toast';
 import { useWeb3 } from '../auth/Web3Context';
 import RedactionBar from '../../components/RedactionBar';
@@ -38,7 +38,7 @@ export const OfferComparison: React.FC = () => {
   // Component States
   const [onChainOffers, setOnChainOffers] = useState<{ offerId: number; lender: string }[]>([]);
   const [activityLogs, setActivityLogs] = useState<OfferActivity[]>([]);
-  const [dbStatus, setDbStatus] = useState<DBStatus | null>(null);
+  const [, setDbStatus] = useState<DBStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isComparing, setIsComparing] = useState(false);
   const [isAccepting, setIsAccepting] = useState(false);

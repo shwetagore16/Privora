@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { getInvoices, getOffers, getMerchantBalance, getActivities } from '../../lib/mock-data';
 import { useWeb3 } from '../auth/Web3Context';
@@ -18,7 +18,8 @@ export const MerchantDashboard: React.FC = () => {
   const [decryptedValues, setDecryptedValues] = useState<Record<string, { buyer: string; amount: number }>>({});
   const [authorizedMap, setAuthorizedMap] = useState<Record<string, boolean>>({});
   const [showBalance, setShowBalance] = useState(false);
-  const { address, connect, isWrongNetwork, switchToSepolia, isCofheReady, invoiceRegistry, cofheClient } = useWeb3();
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const { address, connect, isWrongNetwork, switchToSepolia, isCofheReady, invoiceRegistry, cofheClient, provider } = useWeb3();
 
   // Trigger simulated physical stamp toasts on dashboard load
   useEffect(() => {
@@ -83,67 +84,102 @@ export const MerchantDashboard: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    const fetchOnChainInvoices = async () => {
-      if (!invoiceRegistry || !address) {
-        setIsLoading(false);
-        return;
-      }
+  const fetchOnChainInvoices = useCallback(async () => {
+    if (!invoiceRegistry || !address) {
+      setIsLoading(false);
+      return;
+    }
 
-      setIsLoading(true);
-      try {
-        const filter = invoiceRegistry.filters.InvoiceCreated(null, null, address);
-        const events = await invoiceRegistry.queryFilter(filter);
-
-        const fetchedInvoices = [];
-        for (const event of events) {
-          if ('args' in event && event.args) {
-            const invoiceId = event.args.invoiceId;
-            const metadata = await invoiceRegistry.getInvoiceMetadata(invoiceId);
-            const encryptedData = await invoiceRegistry.getEncryptedInvoiceData(invoiceId);
-
-            const statusNum = Number(metadata.status);
-            let statusStr = 'Pending';
-            
-            if (statusNum === 0 || statusNum === 1) {
-              statusStr = 'Pending';
-            } else if (statusNum === 2) {
-              statusStr = 'Approved';
-            } else if (statusNum === 3) {
-              statusStr = 'Financed';
-            } else if (statusNum === 4 || statusNum === 5) {
-              statusStr = 'Settled';
-            }
-
-            const listedDate = Number(metadata.listedAt) > 0 
-              ? new Date(Number(metadata.listedAt) * 1000).toISOString().split('T')[0]
-              : new Date().toISOString().split('T')[0];
-
-            fetchedInvoices.push({
-              id: `inv-${invoiceId.toString()}`,
-              invoiceNumber: `INV-2026-${invoiceId.toString().padStart(3, '0')}`,
-              debtorName: 'REDACTED',
-              amount: 0,
-              dueDate: listedDate,
-              status: statusStr as any,
-              encryptedAmount: encryptedData.amount || '0x0000000000000000000000000000000000000000000000000000000000000000',
-              encryptedDebtor: encryptedData.buyer || '0x0000000000000000000000000000000000000000000000000000000000000000',
-              isEncrypted: true
-            });
-          }
+    setIsLoading(true);
+    setFetchError(null);
+    try {
+      let fromBlock = 11195000;
+      if (provider) {
+        try {
+          const latestBlock = await provider.getBlockNumber();
+          fromBlock = Math.max(11195000, latestBlock - 50000);
+        } catch (blockErr) {
+          console.warn("Failed to retrieve latest block number, falling back to deployment block:", blockErr);
         }
-
-        setInvoices(fetchedInvoices.reverse());
-      } catch (err) {
-        console.error('Failed to fetch on-chain invoices:', err);
-        showToast('Error', 'Failed to retrieve invoice records from Sepolia.', 'due');
-      } finally {
-        setIsLoading(false);
       }
-    };
 
+      const filter = invoiceRegistry.filters.InvoiceCreated(null, null, address);
+      const events = await invoiceRegistry.queryFilter(filter, fromBlock);
+
+      const fetchedInvoices = [];
+      const currentMockInvoices = getInvoices();
+      for (const event of events) {
+        if ('args' in event && event.args) {
+          const invoiceId = event.args.invoiceId;
+          if (Number(invoiceId) <= 13) continue;
+          const metadata = await invoiceRegistry.getInvoiceMetadata(invoiceId);
+          const encryptedData = await invoiceRegistry.getEncryptedInvoiceData(invoiceId);
+
+          const statusNum = Number(metadata.status);
+          let statusStr = 'Pending';
+          
+          if (statusNum === 0 || statusNum === 1) {
+            statusStr = 'Pending';
+          } else if (statusNum === 2) {
+            statusStr = 'Approved';
+          } else if (statusNum === 3) {
+            statusStr = 'Financed';
+          } else if (statusNum === 4 || statusNum === 5) {
+            statusStr = 'Settled';
+          }
+
+          const listedDate = Number(metadata.listedAt) > 0 
+            ? new Date(Number(metadata.listedAt) * 1000).toISOString().split('T')[0]
+            : new Date().toISOString().split('T')[0];
+
+          const invoiceIdStr = `inv-${invoiceId.toString()}`;
+          const matchingMock = currentMockInvoices.find(inv => inv.id === invoiceIdStr);
+
+          fetchedInvoices.push({
+            id: invoiceIdStr,
+            invoiceNumber: `INV-2026-${invoiceId.toString().padStart(3, '0')}`,
+            debtorName: matchingMock ? matchingMock.debtorName : 'REDACTED',
+            amount: matchingMock ? matchingMock.amount : 0,
+            dueDate: matchingMock ? matchingMock.dueDate : listedDate,
+            status: statusStr as any,
+            rawStatus: statusNum,
+            encryptedAmount: encryptedData.amount || '0x0000000000000000000000000000000000000000000000000000000000000000',
+            encryptedDebtor: encryptedData.buyer || '0x0000000000000000000000000000000000000000000000000000000000000000',
+            isEncrypted: true,
+            merchantName: matchingMock ? matchingMock.merchantName : user.businessName || 'Merchant',
+            financingRequestDate: matchingMock ? matchingMock.financingRequestDate : listedDate,
+            paymentTerms: matchingMock ? matchingMock.paymentTerms : 'Net 60',
+            riskTier: matchingMock ? matchingMock.riskTier : 'B',
+            industry: matchingMock ? matchingMock.industry : 'SaaS',
+            tenorDays: matchingMock ? matchingMock.tenorDays : 60,
+            amountRange: matchingMock ? matchingMock.amountRange : '$70K - $90K'
+          });
+        }
+      }
+
+      // Merge on-chain invoices with local cached ones that are pending / approved but not on-chain yet
+      const fetchedIds = new Set(fetchedInvoices.map(inv => inv.id));
+      const fetchedNumbers = new Set(fetchedInvoices.map(inv => inv.invoiceNumber));
+
+      const pendingLocal = currentMockInvoices.filter(inv => 
+        !fetchedIds.has(inv.id) && 
+        !fetchedNumbers.has(inv.invoiceNumber)
+      );
+
+      const finalInvoices = [...pendingLocal, ...fetchedInvoices.reverse()];
+      setInvoices(finalInvoices);
+    } catch (err: any) {
+      console.error('Failed to fetch on-chain invoices:', err);
+      setFetchError(err.message || 'Failed to retrieve invoice records from Sepolia.');
+      showToast('Error', 'Failed to retrieve invoice records from Sepolia.', 'due');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [invoiceRegistry, address, provider, showToast]);
+
+  useEffect(() => {
     fetchOnChainInvoices();
-  }, [invoiceRegistry, address]);
+  }, [fetchOnChainInvoices]);
 
   const mockActivities = getActivities();
 
@@ -307,6 +343,18 @@ export const MerchantDashboard: React.FC = () => {
                   Initializing secure encryption environment...
                 </p>
               </div>
+            ) : fetchError ? (
+              <div className="py-12 flex flex-col items-center justify-center gap-4 text-center bg-paper/50 rounded border-2 border-dashed border-seal/20">
+                <p className="text-xs font-mono text-seal max-w-md">
+                  {fetchError}
+                </p>
+                <button 
+                  onClick={fetchOnChainInvoices}
+                  className="bg-ledger text-paper hover:bg-ledger-light font-sans font-bold py-2.5 px-6 rounded text-xs transition-all shadow-[1px_1px_0px_#0e2114]"
+                >
+                  RETRY FETCH
+                </button>
+              </div>
             ) : isLoading ? (
               <div className="space-y-4 py-4">
                 {[1, 2, 3].map((i) => (
@@ -345,7 +393,7 @@ export const MerchantDashboard: React.FC = () => {
 
                       return (
                         <tr key={inv.id} className="hover:bg-paper/50 transition-colors">
-                          <td className="py-4 font-semibold text-ink">{inv.invoiceNumber}</td>
+                          <td className="py-4 font-semibold text-ink">{inv.invoiceNumber} <span className="text-[10px] text-sage font-normal">(On-chain ID: {inv.id.replace('inv-', '')})</span></td>
                           <td className="py-4">
                             <RedactionBar 
                               value={displayDebtor} 
@@ -384,13 +432,16 @@ export const MerchantDashboard: React.FC = () => {
                               >
                                 {isDecrypted ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
                               </button>
-                              {((inv.status === 'Approved' || inv.status === 'Pending') && getOffers().filter(o => o.invoiceId === inv.id && o.status === 'Pending').length > 0) && (
+                              {(inv.status === 'Approved' || inv.status === 'Pending') && (
                                 <button
                                   onClick={() => navigate(`/merchant/invoices/${inv.id}/offers`)}
                                   className="bg-ledger text-paper hover:bg-ledger-light text-[10px] font-sans font-bold px-2.5 py-1 rounded transition-all shadow-[0.5px_0.5px_0px_#0e2114] active:scale-95"
                                   title="Review received lender bids"
                                 >
-                                  BIDS ({getOffers().filter(o => o.invoiceId === inv.id && o.status === 'Pending').length})
+                                  {getOffers().filter(o => o.invoiceId === inv.id && o.status === 'Pending').length > 0
+                                    ? `BIDS (${getOffers().filter(o => o.invoiceId === inv.id && o.status === 'Pending').length})`
+                                    : 'VIEW OFFERS'
+                                  }
                                 </button>
                               )}
                               {inv.status === 'Financed' && (

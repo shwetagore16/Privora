@@ -219,6 +219,13 @@ export const UploadWizard: React.FC = () => {
         }
       }
 
+      setLogs(prev => [...prev, `[FHEVM_BLOCK] Invoice ID #${blockchainInvoiceId} created. Initiating listing transaction...`]);
+      const listTx = await invoiceRegistry.listOnMarketplace(BigInt(blockchainInvoiceId));
+      setLogs(prev => [...prev, ` -> Listing Transaction Broadcasted. Hash: ${listTx.hash}`]);
+      setLogs(prev => [...prev, ' -> Waiting for listing confirmation...']);
+      const listReceipt = await listTx.wait();
+      setLogs(prev => [...prev, ` -> Invoice listed on marketplace in block ${listReceipt.blockNumber}.`]);
+
       // Add to in-memory array
       const newInvoice: MockInvoice = {
         id: `inv-${blockchainInvoiceId}`,
@@ -239,10 +246,10 @@ export const UploadWizard: React.FC = () => {
         amountRange: parseFloat(amount) < 50000 ? '$20K - $40K' : parseFloat(amount) < 100000 ? '$70K - $90K' : '$100K - $130K'
       };
       addInvoice(newInvoice);
-      addActivity(`Invoice ${newInvoice.invoiceNumber} encrypted and submitted to Sepolia (ID: ${blockchainInvoiceId})`, 'upload');
-      showToast("Invoice Encrypted", `Invoice ${newInvoice.invoiceNumber} has been encrypted and submitted.`, "received");
+      addActivity(`Invoice ${newInvoice.invoiceNumber} listed on Sepolia (ID: ${blockchainInvoiceId})`, 'upload');
+      showToast("Invoice Listed", `Invoice ${newInvoice.invoiceNumber} has been listed on marketplace.`, "received");
 
-      setLogs(prev => [...prev, `[SYSTEM] Block ${receipt.blockNumber} confirmed. Receipt registered.`]);
+      setLogs(prev => [...prev, `[SYSTEM] Complete initialization cycle finished.`]);
       setCeremonyState('completed');
     } catch (err: any) {
       console.error(err);

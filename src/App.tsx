@@ -15,6 +15,7 @@ import OfferComparison from './features/merchant/OfferComparison'
 import Repay from './features/merchant/Repay'
 import { ToastProvider } from './components/Toast'
 import { Profile } from './features/profile/Profile'
+import { Web3Provider } from './features/auth/Web3Context'
 
 
 // Route Guardian for Role Verification
@@ -571,8 +572,9 @@ function LandingPage() {
 export function App() {
   return (
     <ToastProvider>
-      <AuthProvider>
-        <BrowserRouter>
+      <Web3Provider>
+        <AuthProvider>
+          <BrowserRouter>
           <Routes>
             {/* Landing route */}
             <Route path="/" element={<LandingPage />} />
@@ -664,6 +666,7 @@ export function App() {
           </Routes>
         </BrowserRouter>
       </AuthProvider>
+      </Web3Provider>
     </ToastProvider>
   )
 }

@@ -1,5 +1,11 @@
 {
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "installCommand": "npm install"
+  "services": {
+    "frontend": {
+      "root": ".",
+      "build": {
+        "command": "npm run build"
+      },
+      "outputDirectory": "dist"
+    }
+  }
 }
